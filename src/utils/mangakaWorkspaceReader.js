@@ -79,3 +79,25 @@ export function updateSeriesInWorkspace(seriesId, form) {
     return next
   })
 }
+
+export function updateSeriesEbAssessmentInWorkspace(seriesTitle, ebAssessment) {
+  const title = String(seriesTitle ?? '').trim()
+  if (!title) return null
+
+  return saveMangakaWorkspace((ws) => {
+    const idx = ws.seriesList.findIndex(s => s.title === title)
+    if (idx < 0) return ws
+
+    return {
+      ...ws,
+      seriesList: ws.seriesList.map((s, i) => (
+        i === idx
+          ? {
+            ...s,
+            ebAssessment: ebAssessment ? JSON.parse(JSON.stringify(ebAssessment)) : null,
+          }
+          : s
+      )),
+    }
+  })
+}
