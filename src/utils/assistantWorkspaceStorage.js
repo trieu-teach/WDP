@@ -10,9 +10,11 @@ import {
   deleteBlobsByPrefix,
   getBlob,
   paintLayerBlobKey,
+  paintLayerVersionBlobKey,
   deliverableBlobKey,
   putBlob,
 } from './assistantLayerBlobs.js'
+import { normalizeProductionLayers } from './assistantProductionLayerUtils.js'
 
 export const ASSISTANT_INBOX_KEY = 'mk-assistant-inbox-v1'
 export const ASSISTANT_DELIVERABLES_KEY = 'mk-assistant-deliverables-v1'
@@ -205,17 +207,35 @@ export async function saveAssistantPaintLayers(submissionId, paintLayers) {
     const blobKey = paintLayerBlobKey(submissionId, layer.id)
     if (layer.dataUrl) {
       try { await putBlob(blobKey, layer.dataUrl) } catch { /* ignore */ }
-    } else if (!prevIds.has(layer.id)) {
-      // layer mới chưa có dataUrl — bỏ qua
     }
+
+    const versionsMeta = []
+    for (const ver of layer.versions ?? []) {
+      const verKey = paintLayerVersionBlobKey(submissionId, layer.id, ver.id)
+      if (ver.dataUrl) {
+        try { await putBlob(verKey, ver.dataUrl) } catch { /* ignore */ }
+      }
+      versionsMeta.push({
+        id: ver.id,
+        label: ver.label,
+        createdAt: ver.createdAt,
+        blobKey: verKey,
+        hasImage: !!ver.dataUrl || ver.id === layer.activeVersionId,
+      })
+    }
+
     metaList.push({
       id: layer.id,
       name: layer.name,
+      stepType: layer.stepType ?? null,
       type: layer.type ?? 'paint',
       visible: layer.visible !== false,
       opacity: layer.opacity ?? 100,
+      sortOrder: layer.sortOrder ?? 0,
       hasImage: !!layer.dataUrl,
       blobKey,
+      activeVersionId: layer.activeVersionId ?? null,
+      versions: versionsMeta,
     })
   }
 
@@ -234,17 +254,43 @@ export async function loadAssistantPaintLayers(submissionId) {
       const key = m.blobKey || paintLayerBlobKey(submissionId, m.id)
       try { dataUrl = await getBlob(key) } catch { dataUrl = null }
     }
+
+    const versions = []
+    for (const ver of m.versions ?? []) {
+      let verUrl = null
+      if (ver.hasImage) {
+        const verKey =
+          ver.blobKey || paintLayerVersionBlobKey(submissionId, m.id, ver.id)
+        try { verUrl = await getBlob(verKey) } catch { verUrl = null }
+      }
+      versions.push({
+        id: ver.id,
+        label: ver.label,
+        createdAt: ver.createdAt,
+        dataUrl: verUrl,
+      })
+    }
+
+    if (!dataUrl && m.activeVersionId) {
+      const activeVer = versions.find((v) => v.id === m.activeVersionId)
+      dataUrl = activeVer?.dataUrl ?? null
+    }
+
     out.push({
       id: m.id,
       name: m.name,
+      stepType: m.stepType ?? null,
       type: m.type ?? 'paint',
       visible: m.visible !== false,
       opacity: m.opacity ?? 100,
+      sortOrder: m.sortOrder ?? 0,
       dataUrl,
       thumbUrl: dataUrl,
+      activeVersionId: m.activeVersionId ?? null,
+      versions,
     })
   }
-  return out
+  return normalizeProductionLayers(out)
 }
 
 /**

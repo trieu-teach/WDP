@@ -81,6 +81,10 @@ export function paintLayerBlobKey(submissionId, layerId) {
   return `paint:${submissionId}:${layerId}`
 }
 
+export function paintLayerVersionBlobKey(submissionId, layerId, versionId) {
+  return `paint:${submissionId}:${layerId}:v:${versionId}`
+}
+
 export function deliverableBlobKey(deliverableId, kind) {
   return `del:${deliverableId}:${kind}`
 }
