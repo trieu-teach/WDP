@@ -62,18 +62,18 @@ export function ReviewRatingPanel({
   const criteria = getReviewCriteria(submission);
 
   return (
-    <Card className="flex w-full min-h-0 flex-col gap-0 overflow-hidden py-0 shadow-xl border-border/70 dark:border-zinc-700/80 dark:bg-zinc-950/80 max-xl:h-auto xl:max-h-[calc(100dvh-7rem)]">
-      <CardHeader className="shrink-0 border-b border-border/60 bg-gradient-to-br from-zinc-900 to-zinc-950 text-white">
-        <CardTitle className="flex items-center gap-2 text-lg">
-          <Star className="size-5 text-amber-400" />
-          Evaluation & Publishing
+    <Card className="flex h-full w-full flex-col gap-0 overflow-hidden py-0 shadow-xl border-border/70 dark:border-zinc-700/80 dark:bg-zinc-950/80">
+      <CardHeader className="shrink-0 gap-1 border-b border-white/10 bg-gradient-to-br from-zinc-900 to-zinc-950 px-4 py-3.5 text-white sm:px-5 sm:py-4 [.border-b]:pb-3.5 sm:[.border-b]:pb-4">
+        <CardTitle className="flex items-center gap-2 text-base font-semibold leading-tight sm:text-lg">
+          <Star className="size-5 shrink-0 fill-amber-400/20 text-amber-400" />
+          Đánh giá & Xuất bản
         </CardTitle>
-        <CardDescription className="text-zinc-400">
-          Chấm 4 tiêu chí · ghi nhận xét · chọn trạng thái xuất bản.
+        <CardDescription className="text-pretty text-xs leading-relaxed text-zinc-400 sm:text-[0.8125rem]">
+          Chấm 4 tiêu chí, ghi nhận xét và chọn hành động phát hành.
         </CardDescription>
       </CardHeader>
 
-      <CardContent className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-y-contain p-4 lg:p-5 [scrollbar-gutter:stable]">
+      <CardContent className="flex-1 space-y-5 p-4 lg:p-5">
         <div className="grid gap-3">
           {criteria.map((criterion) => (
             <StarCriterionRating

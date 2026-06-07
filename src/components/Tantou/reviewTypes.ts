@@ -8,6 +8,16 @@ export type RatingKey =
 
 export type ReviewRatings = Record<RatingKey, number>;
 
+export type PageNote = {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  text: string;
+  taskType: string;
+};
+
 export type TantouSubmission = {
   id: string;
   seriesTitle: string;
@@ -18,9 +28,15 @@ export type TantouSubmission = {
   mangakaImageUrl?: string;
   mangakaNotes?: Array<{
     id?: string;
+    x?: number;
+    y?: number;
+    w?: number;
+    h?: number;
     text?: string;
     taskType?: string;
   }>;
+  editorialNotes?: PageNote[];
+  editorialNotesByPage?: Record<number, PageNote[]>;
   mangakaName?: string;
   pipeline?: "debut" | "recurring";
   status?: string;
@@ -47,11 +63,19 @@ export type ReviewDraft = {
   reviewText: string;
   reviewStatus: ReviewStatus;
   ratings: ReviewRatings;
+  editorialNotes: PageNote[];
 };
 
 export type ReviewSavePayload = ReviewDraft & {
   averageScore: number;
   coverImageUrl?: string;
+  editorialNotesByPage?: Record<number, PageNote[]>;
+};
+
+export type StoryPage = {
+  pageIndex: number;
+  pageLabel: string;
+  imageUrl?: string;
 };
 
 export type ChapterRow = {

@@ -14,10 +14,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { ChapterListTable } from "./ChapterListTable";
-import { ChapterReaderPanel } from "./ChapterReaderPanel";
+import { TantouPageAnnotator } from "./TantouPageAnnotator";
 import { ReviewRatingPanel } from "./ReviewRatingPanel";
 import type {
   ChapterRow,
+  PageNote,
   ReviewDraft,
   ReviewSavePayload,
   TantouSubmission,
@@ -28,6 +29,10 @@ import {
   createReviewDraft,
   findNextPendingSubmission,
   formatReleaseDate,
+  getMangakaNotesForStoryPage,
+  groupSubmissionsByChapter,
+  isSameChapter,
+  resolveStoryPagesForChapter,
 } from "./reviewUtils";
 
 type TantouChapterReviewDashboardProps = {
@@ -86,11 +91,37 @@ export function TantouChapterReviewDashboard({
   const [viewingChapterId, setViewingChapterId] = useState<string | null>(
     () => submission.id,
   );
+  const [viewingPageIndex, setViewingPageIndex] = useState(
+    () => submission.pageIndex ?? 0,
+  );
+  const [notesByPage, setNotesByPage] = useState<Record<number, PageNote[]>>(
+    () => {
+      const initial: Record<number, PageNote[]> = {};
+      if (submission.editorialNotesByPage) {
+        Object.entries(submission.editorialNotesByPage).forEach(([k, v]) => {
+          initial[Number(k)] = v;
+        });
+      } else if (submission.editorialNotes?.length) {
+        initial[submission.pageIndex ?? 0] = submission.editorialNotes;
+      }
+      return initial;
+    },
+  );
   const readerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setDraft(createReviewDraft(submission));
     setViewingChapterId(submission.id);
+    setViewingPageIndex(submission.pageIndex ?? 0);
+    const initial: Record<number, PageNote[]> = {};
+    if (submission.editorialNotesByPage) {
+      Object.entries(submission.editorialNotesByPage).forEach(([k, v]) => {
+        initial[Number(k)] = v;
+      });
+    } else if (submission.editorialNotes?.length) {
+      initial[submission.pageIndex ?? 0] = submission.editorialNotes;
+    }
+    setNotesByPage(initial);
   }, [submission.id]);
 
   const averageScore = useMemo(
@@ -99,17 +130,16 @@ export function TantouChapterReviewDashboard({
   );
 
   const chapterRows: ChapterRow[] = useMemo(() => {
-    return relatedSubmissions
-      .filter((row) => row.seriesTitle === submission.seriesTitle)
-      .map((row, index) => ({
-        id: row.id,
-        index: index + 1,
-        name: row.pageLabel || `Ch. ${row.chapterNum}`,
-        releaseDate: formatReleaseDate(
-          row.sentAt ?? row.reviewedAt ?? row.forwardedAt,
-        ),
-        status: row.status ?? "pending",
-      }));
+    return groupSubmissionsByChapter(
+      relatedSubmissions,
+      submission.seriesTitle,
+    ).map((group, index) => ({
+      id: group.representativeSubmissionId,
+      index: index + 1,
+      name: `Ch. ${group.chapterNum}`,
+      releaseDate: formatReleaseDate(group.sentAt),
+      status: group.status,
+    }));
   }, [relatedSubmissions, submission.seriesTitle]);
 
   const viewingSubmission = useMemo(() => {
@@ -118,6 +148,24 @@ export function TantouChapterReviewDashboard({
       relatedSubmissions.find((s) => s.id === viewingChapterId) ?? submission
     );
   }, [viewingChapterId, relatedSubmissions, submission]);
+
+  const storyPages = useMemo(() => {
+    if (!viewingSubmission) return [];
+    return resolveStoryPagesForChapter(viewingSubmission, relatedSubmissions);
+  }, [relatedSubmissions, viewingSubmission]);
+
+  const currentStoryPage = storyPages[viewingPageIndex] ?? storyPages[0];
+  const canEditNotes =
+    !!viewingSubmission && isSameChapter(viewingSubmission, submission);
+
+  useEffect(() => {
+    if (!viewingSubmission) return;
+    setViewingPageIndex(
+      isSameChapter(viewingSubmission, submission)
+        ? (submission.pageIndex ?? 0)
+        : 0,
+    );
+  }, [viewingSubmission?.id, submission]);
 
   const nextPending = useMemo(
     () =>
@@ -132,17 +180,34 @@ export function TantouChapterReviewDashboard({
   function handleOpenChapter(id: string) {
     setViewingChapterId(id);
     onSelectChapter(id);
+    setViewingPageIndex(0);
     requestAnimationFrame(() => {
       readerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     });
   }
 
+  function handlePageIndexChange(nextIndex: number) {
+    if (nextIndex < 0 || nextIndex >= storyPages.length) return;
+    setViewingPageIndex(nextIndex);
+  }
+
   function buildPayload(): ReviewSavePayload {
+    const primaryPageIndex = submission.pageIndex ?? 0;
     return {
       ...draft,
       averageScore,
       coverImageUrl: submission.mangakaImageUrl,
+      editorialNotes:
+        notesByPage[primaryPageIndex] ?? draft.editorialNotes ?? [],
+      editorialNotesByPage: notesByPage,
     };
+  }
+
+  function handleEditorialNotesChange(notes: PageNote[]) {
+    setNotesByPage((current) => ({ ...current, [viewingPageIndex]: notes }));
+    if ((submission.pageIndex ?? 0) === viewingPageIndex) {
+      setDraft((current) => ({ ...current, editorialNotes: notes }));
+    }
   }
 
   function updateRating(key: keyof ReviewDraft["ratings"], value: number) {
@@ -187,8 +252,8 @@ export function TantouChapterReviewDashboard({
         </Badge>
       </header>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(340px,420px)] xl:items-start xl:gap-8">
-        <div className="space-y-5">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(340px,420px)] xl:items-stretch xl:gap-8">
+        <div className="flex h-full flex-col gap-5">
           <Card className="border-border/70 dark:bg-zinc-950/60">
             <CardHeader className="pb-3">
               <CardTitle className="text-base">Series metadata</CardTitle>
@@ -245,21 +310,37 @@ export function TantouChapterReviewDashboard({
             onOpen={handleOpenChapter}
           />
 
-          {viewingSubmission ? (
-            <ChapterReaderPanel
-              ref={readerRef}
-              submission={viewingSubmission}
-              onClose={() => setViewingChapterId(null)}
-            />
-          ) : (
-            <div className="rounded-2xl border border-dashed border-border/80 bg-muted/20 px-4 py-10 text-center text-sm text-muted-foreground">
-              Chọn <strong>Mở</strong> trong danh sách chapter để xem trang truyện
-              cần nhận xét.
-            </div>
-          )}
+          <div className="flex min-h-0 flex-1 flex-col">
+            {viewingSubmission ? (
+              <TantouPageAnnotator
+                ref={readerRef}
+                submission={viewingSubmission}
+                storyPages={storyPages}
+                currentPageIndex={viewingPageIndex}
+                onPageIndexChange={handlePageIndexChange}
+                pageLabel={currentStoryPage?.pageLabel}
+                pageImageUrl={currentStoryPage?.imageUrl}
+                mangakaNotes={getMangakaNotesForStoryPage(
+                  viewingSubmission,
+                  viewingPageIndex,
+                )}
+                editorialNotes={notesByPage[viewingPageIndex] ?? []}
+                readOnly={!canEditNotes}
+                onEditorialNotesChange={
+                  canEditNotes ? handleEditorialNotesChange : undefined
+                }
+                onClose={() => setViewingChapterId(null)}
+              />
+            ) : (
+              <div className="flex flex-1 items-center justify-center rounded-2xl border border-dashed border-border/80 bg-muted/20 px-4 py-10 text-center text-sm text-muted-foreground">
+                Chọn <strong>Mở</strong> trong danh sách chapter để xem trang
+                truyện cần nhận xét.
+              </div>
+            )}
+          </div>
         </div>
 
-        <div className="min-h-0 xl:sticky xl:top-20 xl:z-10 xl:self-start">
+        <div className="flex h-full flex-col">
           <ReviewRatingPanel
             submission={submission}
             draft={draft}

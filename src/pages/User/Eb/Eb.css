@@ -72,6 +72,19 @@
   text-align: center;
 }
 
+.eb-rep-banner {
+  line-height: 1.45;
+}
+
+.eb-council-table th,
+.eb-council-table td {
+  vertical-align: middle;
+}
+
+.eb-council-table__avg td {
+  background: color-mix(in srgb, var(--ws-accent, #2a9d8f) 8%, transparent);
+}
+
 .eb-queue-item__meta strong {
   display: block;
   font-size: 18px;

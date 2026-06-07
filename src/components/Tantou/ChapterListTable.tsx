@@ -38,10 +38,10 @@ export function ChapterListTable({
         <div className="flex items-center gap-2">
           <BookOpen className="size-4 text-primary" />
           <div>
-            <h3 className="font-semibold text-foreground">Chapter List</h3>
+            <h3 className="font-semibold text-foreground">Danh sách chương</h3>
             <p className="text-xs text-muted-foreground">
-              Bấm <strong className="font-medium">Mở</strong> để xem trang cần
-              nhận xét
+              Bấm <strong className="font-medium">Mở</strong> chương — lật trang
+              bằng mũi tên phía dưới ảnh
             </p>
           </div>
         </div>
@@ -53,7 +53,7 @@ export function ChapterListTable({
           <thead className="bg-muted/50 text-left text-muted-foreground">
             <tr>
               <th className="px-3 py-2.5 font-medium">#</th>
-              <th className="px-3 py-2.5 font-medium">Chapter</th>
+              <th className="px-3 py-2.5 font-medium">Chương</th>
               <th className="hidden px-3 py-2.5 font-medium sm:table-cell">
                 Sent
               </th>

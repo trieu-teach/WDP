@@ -215,6 +215,11 @@ export default function TantouEditor() {
       return;
     }
 
+    const editorialNotes = Array.isArray(reviewData.editorialNotes)
+      ? reviewData.editorialNotes
+      : [];
+    const editorialNotesByPage = reviewData.editorialNotesByPage ?? undefined;
+
     updateTantouSubmission(selected.id, {
       seriesTitle: nextTitle,
       mangakaName: nextAuthor,
@@ -230,6 +235,8 @@ export default function TantouEditor() {
       reviewAverageScore: nextAverage,
       reviewText: nextText,
       editorialComment: nextText,
+      editorialNotes,
+      editorialNotesByPage,
       reviewedAt: new Date().toISOString(),
     });
 
@@ -254,6 +261,7 @@ export default function TantouEditor() {
       rejectSubmissionToMangaka(selected.id, {
         editorialComment: nextText,
         reviewNotes: reviewData.ratings ?? {},
+        editorialNotes,
       });
       toast.success("Đã gửi review và lý do về Mangaka.");
       if (!maybeAdvance()) {

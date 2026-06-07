@@ -382,12 +382,24 @@
 }
 
 .te-editor__workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  align-items: stretch;
   min-height: 520px;
 }
 
 .te-editor__stage {
   background: #0e0d0c;
   border-radius: 0;
+}
+
+.te-editor__stage-wrap {
+  min-height: 0;
+  min-width: 0;
+}
+
+.te-page-nav {
+  backdrop-filter: blur(6px);
 }
 
 .te-board {
@@ -400,6 +412,16 @@
 
 .te-editor__workspace--simple {
   min-height: 480px;
+}
+
+.te-editor.flex .te-editor__workspace--simple {
+  min-height: 0;
+  height: 100%;
+}
+
+.te-editor.flex .te-notes-panel--simple {
+  height: 100%;
+  max-height: none;
 }
 
 .te-notes-panel--simple {

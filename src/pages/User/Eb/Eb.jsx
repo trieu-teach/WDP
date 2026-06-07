@@ -34,6 +34,13 @@ import { updateSeriesEbAssessmentInWorkspace } from "@/utils/mangakaWorkspaceRea
 import { listTantouSubmissions } from "@/utils/tantouWorkspaceStorage.js";
 import { placeholderPageDataUrl } from "@/utils/assistantWorkspaceStorage.js";
 import { LABEL_EDITOR_BOARD } from "@/constants/roleTerminology.js";
+import {
+  EB_COUNCIL_MEMBERS,
+  buildCouncilAggregate,
+  readCouncilSeriesScores,
+  saveCouncilMemberAssessment,
+  seedCouncilDemoScores,
+} from "@/utils/ebCouncilStorage.js";
 import "./Eb.css";
 
 const NAV_LINKS = [
@@ -166,20 +173,114 @@ function buildInitialNotes() {
   };
 }
 
-export default function Eb() {
-  const navigate = useNavigate();
-  const user = getSession();
-  const [, bump] = useState(0);
-  const [selectedTitle, setSelectedTitle] = useState("");
-  const [scoreType, setScoreType] = useState("color");
-  const [scores, setScores] = useState({
+function buildInitialScores() {
+  return {
     plotDialogue: "0",
     artDesign: "0",
     panelingCamera: "0",
     pacingHook: "0",
     coloring: "0",
     toneShading: "0",
-  });
+  };
+}
+
+function CouncilScoresTable({
+  memberRows,
+  scoreFields,
+  criterionAverages,
+  councilAverage,
+  scoredCount,
+  activeMemberId,
+}) {
+  return (
+    <div className="eb-council-table-wrap overflow-x-auto rounded-xl border bg-card">
+      <table className="eb-council-table w-full min-w-[640px] text-sm">
+        <thead>
+          <tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
+            <th className="px-3 py-2.5 font-medium">Thành viên HĐ</th>
+            {scoreFields.map((field) => (
+              <th key={field.key} className="px-2 py-2.5 font-medium">
+                {field.hint}
+              </th>
+            ))}
+            <th className="px-3 py-2.5 font-medium">DTB</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border/70">
+          {memberRows.map((row) => {
+            const isActive = row.id === activeMemberId;
+            return (
+              <tr
+                key={row.id}
+                className={isActive ? "bg-primary/5" : undefined}
+              >
+                <td className="px-3 py-2.5">
+                  <p className="font-medium text-foreground">{row.name}</p>
+                  <p className="text-xs text-muted-foreground">{row.title}</p>
+                  {isActive ? (
+                    <Badge variant="outline" className="mt-1 text-[10px]">
+                      Đang nhập
+                    </Badge>
+                  ) : null}
+                </td>
+                {scoreFields.map((field) => (
+                  <td
+                    key={field.key}
+                    className="px-2 py-2.5 text-center tabular-nums"
+                  >
+                    {row.scored ? (
+                      <span className="inline-flex flex-col items-center gap-0.5">
+                        <span className="font-medium">
+                          {clampScore(row.scores[field.key]).toFixed(1)}
+                        </span>
+                        <ScoreStars value={row.scores[field.key]} />
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </td>
+                ))}
+                <td className="px-3 py-2.5 text-center font-semibold tabular-nums">
+                  {row.scored ? row.average.toFixed(1) : "—"}
+                </td>
+              </tr>
+            );
+          })}
+          <tr className="eb-council-table__avg border-t-2 bg-muted/25 font-medium">
+            <td className="px-3 py-3">
+              Trung bình Hội đồng
+              <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                {scoredCount}/{memberRows.length} thành viên đã chấm
+              </span>
+            </td>
+            {scoreFields.map((field) => (
+              <td
+                key={field.key}
+                className="px-2 py-3 text-center tabular-nums text-foreground"
+              >
+                {criterionAverages[field.key] != null
+                  ? criterionAverages[field.key].toFixed(1)
+                  : "—"}
+              </td>
+            ))}
+            <td className="px-3 py-3 text-center text-base font-bold tabular-nums text-primary">
+              {councilAverage.toFixed(1)}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export default function Eb() {
+  const navigate = useNavigate();
+  const user = getSession();
+  const [councilTick, bumpCouncil] = useState(0);
+  const [selectedTitle, setSelectedTitle] = useState("");
+  const [activeMemberId, setActiveMemberId] = useState(EB_COUNCIL_MEMBERS[0].id);
+  const [scoreType, setScoreType] = useState("color");
+  const [scores, setScores] = useState(buildInitialScores);
   const [criterionNotes, setCriterionNotes] = useState(buildInitialNotes);
   const [scoreErrors, setScoreErrors] = useState({
     plotDialogue: "",
@@ -189,17 +290,19 @@ export default function Eb() {
     coloring: "",
     toneShading: "",
   });
-  const refresh = useCallback(() => bump((n) => n + 1), []);
+  const refresh = useCallback(() => bumpCouncil((n) => n + 1), []);
 
   useEffect(() => {
     function onSync() {
       refresh();
     }
     window.addEventListener("mk-eb-pending-update", onSync);
+    window.addEventListener("mk-eb-council-update", onSync);
     window.addEventListener("storage", onSync);
     window.addEventListener("mk-eb-approved-update", onSync);
     return () => {
       window.removeEventListener("mk-eb-pending-update", onSync);
+      window.removeEventListener("mk-eb-council-update", onSync);
       window.removeEventListener("storage", onSync);
       window.removeEventListener("mk-eb-approved-update", onSync);
     };
@@ -219,6 +322,62 @@ export default function Eb() {
   const activeTitle = pending.some((item) => item.title === selectedTitle)
     ? selectedTitle
     : (pending[0]?.title ?? "");
+
+  useEffect(() => {
+    if (!activeTitle) return;
+    if (!readCouncilSeriesScores(activeTitle)) {
+      seedCouncilDemoScores(activeTitle, scoreType);
+      refresh();
+    }
+  }, [activeTitle, scoreType, refresh]);
+
+  const councilRecord = useMemo(
+    () => (activeTitle ? readCouncilSeriesScores(activeTitle) : null),
+    [activeTitle, councilTick],
+  );
+
+  useEffect(() => {
+    if (!activeTitle) return;
+    const record = readCouncilSeriesScores(activeTitle);
+    if (record?.scoreType) setScoreType(record.scoreType);
+
+    const memberEntry = record?.members?.[activeMemberId];
+    if (memberEntry?.scores) {
+      setScores((current) => ({
+        ...current,
+        ...Object.fromEntries(
+          Object.entries(memberEntry.scores).map(([key, value]) => [
+            key,
+            Number(value).toFixed(1),
+          ]),
+        ),
+      }));
+      setCriterionNotes((current) => ({
+        ...current,
+        ...(memberEntry.criterionNotes ?? {}),
+      }));
+      setScoreErrors({
+        plotDialogue: "",
+        artDesign: "",
+        panelingCamera: "",
+        pacingHook: "",
+        coloring: "",
+        toneShading: "",
+      });
+      return;
+    }
+
+    setScores(buildInitialScores());
+    setCriterionNotes(buildInitialNotes());
+    setScoreErrors({
+      plotDialogue: "",
+      artDesign: "",
+      panelingCamera: "",
+      pacingHook: "",
+      coloring: "",
+      toneShading: "",
+    });
+  }, [activeTitle, activeMemberId, councilTick]);
   const activeTantouSubmission =
     listTantouSubmissions().find(
       (submission) => submission.seriesTitle === activeTitle,
@@ -236,6 +395,12 @@ export default function Eb() {
     return scoreFields.length ? total / scoreFields.length : 0;
   }, [scoreFields, scores]);
   const classification = getClassification(average);
+  const councilAggregate = useMemo(() => {
+    const keys = scoreFields.map((field) => field.key);
+    return buildCouncilAggregate(councilRecord, keys);
+  }, [councilRecord, scoreFields]);
+  const councilClassification = getClassification(councilAggregate.councilAverage);
+  const activeMember = EB_COUNCIL_MEMBERS.find((m) => m.id === activeMemberId);
 
   function updateScore(key, value) {
     setScores((current) => ({ ...current, [key]: value }));
@@ -285,24 +450,65 @@ export default function Eb() {
       .filter((criterion) => criterion.note.trim())
       .map((criterion) => `${criterion.label}: ${criterion.note.trim()}`);
 
+    saveCouncilMemberAssessment(activeTitle, activeMemberId, {
+      scoreType,
+      scores: Object.fromEntries(
+        criterionDetails.map((criterion) => [criterion.key, criterion.score]),
+      ),
+      criterionNotes: { ...criterionNotes },
+      average: Number(average.toFixed(1)),
+      assessedAt: new Date().toISOString(),
+      enteredBy: user?.name ?? "Đại diện EB",
+    });
+
+    const updatedRecord = readCouncilSeriesScores(activeTitle);
+    const keys = scoreFields.map((field) => field.key);
+    const aggregate = buildCouncilAggregate(updatedRecord, keys);
+    const councilClass = getClassification(aggregate.councilAverage);
+
+    const memberAssessments = aggregate.memberRows
+      .filter((row) => row.scored)
+      .map((row) => ({
+        memberId: row.id,
+        memberName: row.name,
+        memberTitle: row.title,
+        average: row.average,
+        scores: row.scores,
+        assessedAt: row.assessedAt,
+        enteredBy: row.enteredBy,
+      }));
+
     updateSeriesEbAssessmentInWorkspace(activeTitle, {
       seriesTitle: activeTitle,
       chapterNum: activeTantouSubmission?.chapterNum ?? null,
       scoreType,
-      average: Number(average.toFixed(1)),
-      classification: classification.label,
-      classificationNote: classification.note,
-      scores: Object.fromEntries(
-        criterionDetails.map((criterion) => [criterion.key, criterion.score]),
-      ),
-      criteria: criterionDetails,
+      average: aggregate.councilAverage,
+      councilAverage: aggregate.councilAverage,
+      memberAverage: Number(average.toFixed(1)),
+      activeMemberId,
+      activeMemberName: activeMember?.name ?? null,
+      classification: councilClass.label,
+      classificationNote: councilClass.note,
+      scores: aggregate.criterionAverages,
+      criteria: scoreFields.map((field) => ({
+        key: field.key,
+        label: field.label,
+        hint: field.hint,
+        score: aggregate.criterionAverages[field.key] ?? 0,
+        note: "",
+      })),
+      memberAssessments,
+      councilScoredCount: aggregate.scoredCount,
+      councilMemberCount: EB_COUNCIL_MEMBERS.length,
       summaryNotes,
-      source: "eb",
+      source: "eb-council",
       assessedAt: new Date().toISOString(),
+      enteredBy: user?.name ?? "Đại diện EB",
     });
 
+    refresh();
     toast.success(
-      `Đã lưu đánh giá cho "${activeTitle}" · DTB ${average.toFixed(1)} · ${classification.label}`,
+      `Đã lưu điểm ${activeMember?.name ?? "thành viên"} · DTB HĐ ${aggregate.councilAverage.toFixed(1)} (${aggregate.scoredCount}/${EB_COUNCIL_MEMBERS.length})`,
     );
   }
 
@@ -313,7 +519,7 @@ export default function Eb() {
       <WorkspaceHero
         label={`${LABEL_EDITOR_BOARD} · demo`}
         title={`Xin chào${user?.name ? `, ${user.name}` : ""}`}
-        description="Biểu quyết series lần đầu — chỉ xem tóm tắt từ Mangaka / Tantou."
+        description="Một tài khoản đại diện nhập điểm từng thành viên — bảng tổng hợp hiển thị đầy đủ điểm Hội đồng."
         className="ws-hero--eb"
       />
 
@@ -321,14 +527,27 @@ export default function Eb() {
         <section className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.9fr)]">
           <Card>
             <CardHeader className="space-y-2">
-              <CardTitle>Bảng chấm điểm series (thang 5)</CardTitle>
+              <CardTitle>Nhập điểm (tài khoản đại diện)</CardTitle>
               <CardDescription>
-                Đánh giá theo từng tiêu chí cho toàn bộ series debut. Điểm trung
-                bình (DTB) và xếp loại sẽ cập nhật theo thời gian thực.
+                Đại diện Hội đồng nhập điểm cho từng thành viên. Bảng bên dưới
+                luôn hiển thị đủ điểm của cả Hội đồng và DTB chung.
               </CardDescription>
             </CardHeader>
 
             <CardContent className="space-y-6">
+              <div className="eb-rep-banner rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-sm">
+                <p className="font-medium text-foreground">
+                  Tài khoản đại diện:{" "}
+                  <span className="text-primary">
+                    {user?.name ?? "Thư ký Hội đồng"}
+                  </span>
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Chọn thành viên HĐ, nhập điểm thay họ, rồi lưu — có thể lần
+                  lượt nhập cho từng người trong cùng series.
+                </p>
+              </div>
+
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label>Series đang chấm</Label>
@@ -358,6 +577,56 @@ export default function Eb() {
                     </SelectContent>
                   </Select>
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Thành viên đang nhập điểm</Label>
+                <Select value={activeMemberId} onValueChange={setActiveMemberId}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Chọn thành viên Hội đồng" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {EB_COUNCIL_MEMBERS.map((member) => {
+                      const scored = councilAggregate.memberRows.find(
+                        (row) => row.id === member.id,
+                      )?.scored;
+                      return (
+                        <SelectItem key={member.id} value={member.id}>
+                          {member.name}
+                          {scored ? " · đã chấm" : ""}
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+                {activeMember ? (
+                  <p className="text-xs text-muted-foreground">
+                    {activeMember.title} — DTB cá nhân tạm tính:{" "}
+                    <strong className="text-foreground">
+                      {average.toFixed(1)}
+                    </strong>
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">
+                    Điểm các thành viên Hội đồng
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Hiển thị đầy đủ điểm đã lưu của từng thành viên và trung
+                    bình chung.
+                  </p>
+                </div>
+                <CouncilScoresTable
+                  memberRows={councilAggregate.memberRows}
+                  scoreFields={scoreFields}
+                  criterionAverages={councilAggregate.criterionAverages}
+                  councilAverage={councilAggregate.councilAverage}
+                  scoredCount={councilAggregate.scoredCount}
+                  activeMemberId={activeMemberId}
+                />
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
@@ -421,22 +690,36 @@ export default function Eb() {
 
               <div className="rounded-xl border bg-muted/30 p-4">
                 <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  DTB tự động
+                  DTB Hội đồng (tổng hợp)
                 </p>
                 <div className="mt-2 flex items-end justify-between gap-3">
                   <div className="text-4xl font-bold tracking-tight text-foreground">
-                    {average.toFixed(1)}
+                    {councilAggregate.councilAverage.toFixed(1)}
                   </div>
                   <Badge variant="outline">/ {SCORE_MAX}.0</Badge>
                 </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {councilAggregate.scoredCount}/{EB_COUNCIL_MEMBERS.length} thành
+                  viên đã chấm
+                  {activeMember ? (
+                    <>
+                      {" "}
+                      · Đang nhập cho{" "}
+                      <strong className="text-foreground">
+                        {activeMember.name}
+                      </strong>{" "}
+                      (DTB {average.toFixed(1)})
+                    </>
+                  ) : null}
+                </p>
                 <Badge
                   variant="secondary"
-                  className={`mt-3 border ${classification.className}`}
+                  className={`mt-3 border ${councilClassification.className}`}
                 >
-                  {classification.label}
+                  {councilClassification.label}
                 </Badge>
                 <p className="mt-3 text-sm text-muted-foreground">
-                  {classification.note}
+                  {councilClassification.note}
                 </p>
 
                 <div className="mt-4 space-y-2 text-sm">
@@ -461,7 +744,7 @@ export default function Eb() {
                 </div>
 
                 <Button className="mt-4 w-full" onClick={handleSaveAssessment}>
-                  Lưu đánh giá tạm
+                  Lưu điểm thành viên đang chọn
                 </Button>
               </div>
             </CardContent>
