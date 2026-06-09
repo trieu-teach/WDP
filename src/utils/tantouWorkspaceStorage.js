@@ -133,11 +133,12 @@ export function forwardSubmissionToEb(submissionId) {
 }
 
 /** Tantou: chưa đạt — gửi nhận xét về Mangaka. */
-export function rejectSubmissionToMangaka(submissionId, { editorialComment, reviewNotes }) {
+export function rejectSubmissionToMangaka(submissionId, { editorialComment, reviewNotes, editorialNotes }) {
   updateTantouSubmission(submissionId, {
     status: 'revision',
     editorialComment,
     reviewNotes,
+    editorialNotes: Array.isArray(editorialNotes) ? editorialNotes.map(n => ({ ...n })) : undefined,
     rejectedAt: new Date().toISOString(),
   })
 }
