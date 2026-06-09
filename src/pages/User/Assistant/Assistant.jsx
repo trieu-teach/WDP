@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
   ArrowDownToLine,
-  Brush,
   CheckCircle2,
   Clock,
   DollarSign,
@@ -15,14 +14,11 @@ import {
   Layers as LayersIcon,
   Lightbulb,
   Lock,
-  Pencil,
-  Plus,
+  MonitorOff,
   Send,
   Sparkles,
   StickyNote,
-  Trash2,
   TrendingUp,
-  Upload,
 } from 'lucide-react'
 import Header from '@/components/User/Header/Header.jsx'
 import Footer from '@/components/User/Footer/Footer.jsx'
@@ -36,13 +32,23 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { getSession, logout } from '@/lib/auth.js'
-import { LAYER_ACCENT_COLORS } from '@/constants/paintPalette.js'
+import { ASSISTANT_PRODUCTION_STEPS } from '@/constants/assistantProductionLayers.js'
 import { MANGA_PAGE_HEIGHT, MANGA_PAGE_WIDTH } from '@/constants/mangaPageDimensions.js'
 import { noteTaskLabel } from '@/constants/workspaceTasks.js'
+import { ProductionLayerRow } from '@/components/Assistant/ProductionLayerRow.jsx'
+import {
+  getBlob,
+  paintLayerVersionBlobKey,
+} from '@/utils/assistantLayerBlobs.js'
+import {
+  appendLayerVersion,
+  moveLayerOrder,
+  setActiveLayerVersion,
+  sortLayersForStack,
+} from '@/utils/assistantProductionLayerUtils.js'
 import {
   hydrateAssistantSubmission,
   listAssistantSubmissions,
@@ -63,7 +69,7 @@ const NAV_LINKS = [{ to: '/', label: 'Trang chủ' }]
 
 const STATS = [
   { label: 'Việc được giao', icon: Inbox, color: 'sky' },
-  { label: 'Đang xử lý', icon: Brush, color: 'violet' },
+  { label: 'Đang xử lý', icon: LayersIcon, color: 'violet' },
   { label: 'Chờ Mangaka duyệt', icon: Clock, color: 'amber' },
   { label: 'Trang đã duyệt', icon: CheckCircle2, color: 'emerald' },
   { label: 'Thu nhập tháng này', icon: DollarSign, color: 'rose' },
@@ -79,7 +85,7 @@ const STAT_ICON_BG = {
 
 const STATUS_BADGE = {
   pending_assistant: { label: 'Chờ nhận', className: 'bg-amber-100 text-amber-700 hover:bg-amber-100 dark:bg-amber-500/15 dark:text-amber-400' },
-  in_progress: { label: 'Đang vẽ', className: 'bg-violet-100 text-violet-700 hover:bg-violet-100 dark:bg-violet-500/15 dark:text-violet-400' },
+  in_progress: { label: 'Đang xử lý', className: 'bg-violet-100 text-violet-700 hover:bg-violet-100 dark:bg-violet-500/15 dark:text-violet-400' },
   submitted_to_mangaka: { label: 'Đã gửi', className: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-500/15 dark:text-emerald-400' },
 }
 
@@ -88,10 +94,6 @@ const INCOME_MONTHS = [
   { month: '04/2026', pages: 19, amount: '3.1M' },
   { month: '03/2026', pages: 22, amount: '3.6M' },
 ]
-
-function uid(prefix = 'layer') {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-}
 
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -153,7 +155,7 @@ async function renderComposite({
     }
   }
 
-  for (const layer of paintLayers) {
+  for (const layer of sortLayersForStack(paintLayers)) {
     if (!layer.visible || !layer.dataUrl) continue
     try {
       const img = await loadImage(layer.dataUrl)
@@ -209,7 +211,7 @@ function LayerStack({ baseUrl, notes, baseVisible, notesVisible, paintLayers, cl
         </div>
       )}
 
-      {paintLayers.map(layer => (
+      {sortLayersForStack(paintLayers).map(layer => (
         layer.visible && layer.dataUrl ? (
           <img
             key={layer.id}
@@ -237,105 +239,6 @@ function LayerStack({ baseUrl, notes, baseVisible, notesVisible, paintLayers, cl
         </div>
       ) : null}
     </div>
-  )
-}
-
-function LayerRow({ layer, accent, onToggle, onChangeOpacity, onRename, onRemove, onPickFile }) {
-  const isLocked = !!layer.locked
-  const isPaint = layer.type === 'paint'
-
-  return (
-    <li
-      className={cn(
-        'group relative rounded-lg border p-3 transition-colors',
-        layer.visible ? 'border-border bg-card' : 'border-dashed border-muted bg-muted/40',
-      )}
-      style={accent ? { borderLeftColor: accent, borderLeftWidth: 3 } : undefined}
-    >
-      <div className="flex items-center gap-3">
-        <Button
-          size="icon-sm"
-          variant={layer.visible ? 'default' : 'outline'}
-          onClick={() => onToggle(layer.id)}
-          disabled={isLocked && layer.type === 'base'}
-          aria-label={layer.visible ? 'Ẩn layer' : 'Hiện layer'}
-          title={layer.visible ? 'Ẩn layer' : 'Hiện layer'}
-        >
-          {layer.visible ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
-        </Button>
-
-        <div className="size-10 shrink-0 overflow-hidden rounded border bg-muted">
-          {layer.thumbUrl ? (
-            <img src={layer.thumbUrl} alt="" className="size-full object-contain" />
-          ) : (
-            <span className="flex size-full items-center justify-center text-base">
-              {layer.type === 'base' ? '🖼️' : layer.type === 'notes' ? '📝' : '🎨'}
-            </span>
-          )}
-        </div>
-
-        <div className="min-w-0 flex-1">
-          {isPaint && onRename ? (
-            <Input
-              value={layer.name}
-              onChange={(e) => onRename(layer.id, e.target.value)}
-              className="h-7 px-2 text-sm"
-            />
-          ) : (
-            <div className="flex items-center gap-1.5">
-              <span className="truncate text-sm font-medium">{layer.name}</span>
-              {isLocked ? <Lock className="size-3 text-muted-foreground" /> : null}
-            </div>
-          )}
-          <p className="text-[10px] text-muted-foreground">
-            {layer.type === 'base'
-              ? 'Ảnh gốc Mangaka gửi'
-              : layer.type === 'notes'
-                ? 'Ô ghi chú từ Mangaka'
-                : 'Layer Assistant tải lên'}
-          </p>
-        </div>
-
-        {isPaint ? (
-          <div className="flex items-center gap-1">
-            {onPickFile ? (
-              <Button size="icon-sm" variant="ghost" onClick={() => onPickFile(layer.id)} title="Thay file">
-                <Upload className="size-3.5" />
-              </Button>
-            ) : null}
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              onClick={() => onRemove(layer.id)}
-              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-              title="Xóa layer"
-            >
-              <Trash2 className="size-3.5" />
-            </Button>
-          </div>
-        ) : null}
-      </div>
-
-      {isPaint && layer.visible ? (
-        <div className="mt-2 flex items-center gap-2 pl-11">
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-            Đậm
-          </span>
-          <input
-            type="range"
-            min={10}
-            max={100}
-            step={5}
-            value={layer.opacity ?? 100}
-            onChange={(e) => onChangeOpacity(layer.id, Number(e.target.value))}
-            className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-muted [&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
-          />
-          <span className="w-8 text-right text-[10px] tabular-nums text-muted-foreground">
-            {layer.opacity ?? 100}%
-          </span>
-        </div>
-      ) : null}
-    </li>
   )
 }
 
@@ -499,52 +402,71 @@ export default function Assistant() {
     setPaintLayers(prev => prev.map(l => (l.id === layerId ? { ...l, opacity: value } : l)))
   }
 
-  function renameLayer(layerId, name) {
-    setPaintLayers(prev => prev.map(l => (l.id === layerId ? { ...l, name } : l)))
+  function moveLayer(layerId, direction) {
+    setPaintLayers(prev => moveLayerOrder(prev, layerId, direction))
   }
 
-  function removeLayer(layerId) {
+  async function handleSelectVersion(layerId, versionId) {
+    if (!selectedSlim) return
     const layer = paintLayers.find(l => l.id === layerId)
-    if (!layer) return
-    if (!window.confirm(`Xóa layer "${layer.name}"? Thao tác này không hoàn tác.`)) return
-    setPaintLayers(prev => prev.filter(l => l.id !== layerId))
+    const ver = layer?.versions?.find(v => v.id === versionId)
+    let dataUrl = ver?.dataUrl ?? null
+    if (!dataUrl) {
+      try {
+        dataUrl = await getBlob(
+          paintLayerVersionBlobKey(selectedSlim.id, layerId, versionId),
+        )
+      } catch {
+        dataUrl = null
+      }
+    }
+    setPaintLayers(prev =>
+      prev.map(l =>
+        l.id === layerId ? setActiveLayerVersion(l, versionId, dataUrl) : l,
+      ),
+    )
+  }
+
+  function handleDownloadLayer(layerId) {
+    const layer = paintLayers.find(l => l.id === layerId)
+    if (!layer?.dataUrl || !selected) return
+    const step = ASSISTANT_PRODUCTION_STEPS.find(s => layer.stepType === s.key)
+    const ver = layer.versions?.find(v => v.id === layer.activeVersionId)
+    const a = document.createElement('a')
+    a.href = layer.dataUrl
+    a.download = `${selected.seriesTitle}-Ch${selected.chapterNum}-${step?.key ?? 'layer'}-${ver?.label ?? 'file'}.png`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    toast.success(`Đã tải ${layer.name}.`)
   }
 
   async function handleAddLayerFiles(files, replaceLayerId = null) {
-    if (!selected || !files?.length) return
-    const arr = Array.from(files).filter(f => f.type.startsWith('image/'))
+    if (!selected || !replaceLayerId || !files?.length) return
+    const arr = Array.from(files).filter(
+      f => f.type === 'image/png' || f.type === 'image/webp',
+    )
     if (!arr.length) {
-      toast.error('Chỉ chấp nhận file ảnh (PNG/JPG/WebP).')
+      toast.error('Chỉ chấp nhận PNG hoặc WebP (nền trong suốt).')
       return
     }
     setBusy(true)
     try {
-      const filesToRead = replaceLayerId ? arr.slice(0, 1) : arr
-      const dataUrls = await Promise.all(filesToRead.map(fileToDataUrl))
-      setPaintLayers(prev => {
-        if (replaceLayerId) {
-          return prev.map(l => (
-            l.id === replaceLayerId
-              ? { ...l, dataUrl: dataUrls[0], thumbUrl: dataUrls[0], visible: true }
-              : l
-          ))
-        }
-        const baseCount = prev.length
-        const next = dataUrls.map((url, i) => ({
-          id: uid('paint'),
-          name: `Layer ${baseCount + i + 1}`,
-          dataUrl: url,
-          thumbUrl: url,
-          type: 'paint',
-          visible: true,
-          opacity: 100,
-        }))
-        return [...prev, ...next]
-      })
-      toast.success(replaceLayerId
-        ? 'Đã thay file cho layer.'
-        : `Đã thêm ${filesToRead.length} layer mới.`,
+      const dataUrl = await fileToDataUrl(arr[0])
+      setPaintLayers(prev =>
+        prev.map(l => {
+          if (l.id !== replaceLayerId) return l
+          const updated = appendLayerVersion(l, dataUrl)
+          return {
+            ...updated,
+            versions: updated.versions.map(v =>
+              v.id === updated.activeVersionId ? { ...v, dataUrl } : v,
+            ),
+          }
+        }),
       )
+      const layerName = paintLayers.find(l => l.id === replaceLayerId)?.name
+      toast.success(`Đã upload phiên bản mới cho ${layerName ?? 'layer'}.`)
     } catch {
       toast.error('Không đọc được ảnh — thử file khác.')
     } finally {
@@ -572,7 +494,7 @@ export default function Assistant() {
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
-    toast.success('Đã tải ảnh gốc — mở phần mềm vẽ ưa thích, vẽ trên layer trong suốt rồi quay lại tải lên.')
+    toast.success('Đã tải bản phác thảo — chỉnh trong Photoshop / Clip Studio Paint rồi upload từng layer PNG/WebP.')
   }
 
   async function handleSubmitToMangaka(mode) {
@@ -614,12 +536,16 @@ export default function Assistant() {
         mangakaImageBlobKey: selectedSlim?.mangakaImageBlobKey,
         compositeDataUrl,
         overlayDataUrl,
-        layersMeta: paintLayers.map(l => ({
+        layersMeta: sortLayersForStack(paintLayers).map(l => ({
           id: l.id,
           name: l.name,
+          stepType: l.stepType,
           type: l.type,
           visible: l.visible,
           opacity: l.opacity ?? 100,
+          sortOrder: l.sortOrder,
+          activeVersionId: l.activeVersionId,
+          versionCount: l.versions?.length ?? 0,
         })),
         status: 'pending_mangaka_review',
         sentAt: new Date().toISOString(),
@@ -647,20 +573,20 @@ export default function Assistant() {
         className="from-violet-950 to-zinc-950"
         label="Assistant Workspace"
         title={`Xin chào${user?.name ? `, ${user.name.split(' ')[0]}` : ''}`}
-        description="Tải ảnh gốc về vẽ trên phần mềm yêu thích, sau đó upload từng layer PNG trong suốt lên đây. Bật/tắt từng layer để xem cách chúng chồng lên nhau."
+        description="Mangaka gửi bản phác thảo PNG/WebP. Assistant tải về, chỉnh trong Photoshop hoặc Clip Studio Paint, rồi upload lại từng layer sản xuất. Website không chỉnh ảnh trực tiếp."
       >
         <div className="mt-5 flex flex-wrap gap-3 text-xs text-zinc-300">
           <Badge variant="secondary" className="bg-white/10 text-white hover:bg-white/15">
-            <LayersIcon className="size-3" />
-            Quản lý layer
-          </Badge>
-          <Badge variant="secondary" className="bg-white/10 text-white hover:bg-white/15">
             <ArrowDownToLine className="size-3" />
-            Tải ảnh gốc
+            Download bản gốc
           </Badge>
           <Badge variant="secondary" className="bg-white/10 text-white hover:bg-white/15">
-            <Upload className="size-3" />
-            Upload PNG trong suốt
+            <MonitorOff className="size-3" />
+            Chỉnh ngoài PS / CSP
+          </Badge>
+          <Badge variant="secondary" className="bg-white/10 text-white hover:bg-white/15">
+            <LayersIcon className="size-3" />
+            6 layer sản xuất
           </Badge>
         </div>
       </WorkspaceHero>
@@ -669,8 +595,7 @@ export default function Assistant() {
         <input
           id="as-layer-file-input"
           type="file"
-          accept="image/png,image/jpeg,image/webp"
-          multiple
+          accept="image/png,image/webp"
           hidden
           onChange={onFileInputChange}
         />
@@ -785,7 +710,7 @@ export default function Assistant() {
                               Ch. {sub.chapterNum} · {sub.pageLabel}
                             </p>
                             <p className="text-xs text-muted-foreground">
-                              {sub.notes?.length ?? 0} vùng · {layerCount} layer
+                              {sub.notes?.length ?? 0} vùng · {layerCount || 6} bước layer
                             </p>
                             <Badge className={cn('mt-1', badge.className)} variant="secondary">
                               {badge.label}
@@ -838,9 +763,10 @@ export default function Assistant() {
                       className="w-full max-w-[640px]"
                     />
                     <p className="mt-3 text-center text-xs text-zinc-400">
-                      Đang hiển thị <strong className="text-white">{visibleLayerCount}</strong> / {paintLayers.length} layer Assistant
-                      {baseVisible ? ' + ảnh gốc' : ''}
-                      {notesVisible && noteCount > 0 ? ' + ghi chú' : ''}
+                      Preview · <strong className="text-white">{visibleLayerCount}</strong>/
+                      {paintLayers.length} layer đang bật
+                      {baseVisible ? ' · ảnh gốc' : ''}
+                      {notesVisible && noteCount > 0 ? ' · ghi chú' : ''}
                     </p>
                   </div>
                 </Card>
@@ -893,40 +819,31 @@ export default function Assistant() {
             <Card className="border-violet-200 bg-gradient-to-b from-violet-50 to-transparent dark:border-violet-500/20 dark:from-violet-500/10">
               <CardHeader className="pb-2">
                 <CardTitle className="flex items-center gap-2 text-base">
-                  <Sparkles className="size-4 text-violet-600" />
-                  Cách hoạt động của Layer
+                  <MonitorOff className="size-4 text-violet-600" />
+                  Không chỉnh ảnh trên web
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 text-xs text-muted-foreground">
                 <p>
-                  Bật <strong className="text-foreground">Layer 1</strong> → bạn chỉ thấy bản vẽ của layer 1.
+                  Website chỉ <strong className="text-foreground">quản lý layer</strong> (upload, preview, bật/tắt, thứ tự, download, phiên bản).
                 </p>
                 <p>
-                  Bật thêm <strong className="text-foreground">Layer 2</strong> → cả 2 layer chồng lên nhau.
-                </p>
-                <p>
-                  Tắt 1 layer → ẩn bản vẽ đó nhưng vẫn giữ file. Bạn có thể bật/tắt liên tục để so sánh.
+                  Toàn bộ chỉnh sửa nét vẽ / màu / chữ thực hiện trong{' '}
+                  <strong className="text-foreground">Photoshop</strong> hoặc{' '}
+                  <strong className="text-foreground">Clip Studio Paint</strong>.
                 </p>
               </CardContent>
             </Card>
 
             <Card>
-              <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
+              <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-base">
                   <LayersIcon className="size-4 text-primary" />
-                  Layer ({paintLayers.length})
+                  Layer sản xuất ({paintLayers.length})
                 </CardTitle>
-                <Button
-                  size="sm"
-                  disabled={!selected || busy}
-                  onClick={() => {
-                    setLayerToReplace(null)
-                    document.getElementById('as-layer-file-input')?.click()
-                  }}
-                >
-                  <Plus className="size-3.5" />
-                  Tải lên
-                </Button>
+                <CardDescription className="text-xs">
+                  Sketch → Line Art → Color → Text → Effect → Final
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 {!selected ? (
@@ -992,29 +909,29 @@ export default function Assistant() {
                       ) : null}
                     </div>
 
-                    {paintLayers.length > 0 ? (
-                      <ul className="space-y-2">
-                        {[...paintLayers].reverse().map((layer, i) => (
-                          <LayerRow
+                    <ul className="space-y-2">
+                      {sortLayersForStack(paintLayers).map((layer, index, arr) => {
+                        const step = ASSISTANT_PRODUCTION_STEPS.find(
+                          s => s.key === layer.stepType,
+                        )
+                        return (
+                          <ProductionLayerRow
                             key={layer.id}
                             layer={layer}
-                            accent={LAYER_ACCENT_COLORS[(paintLayers.length - 1 - i) % LAYER_ACCENT_COLORS.length]}
+                            step={step}
                             onToggle={toggleLayerVisible}
                             onChangeOpacity={changeLayerOpacity}
-                            onRename={renameLayer}
-                            onRemove={removeLayer}
                             onPickFile={pickReplaceFile}
+                            onDownload={handleDownloadLayer}
+                            onMoveUp={id => moveLayer(id, 'up')}
+                            onMoveDown={id => moveLayer(id, 'down')}
+                            canMoveUp={index > 0}
+                            canMoveDown={index < arr.length - 1}
+                            onSelectVersion={handleSelectVersion}
                           />
-                        ))}
-                      </ul>
-                    ) : (
-                      <div className="rounded-lg border border-dashed p-4 text-center">
-                        <Pencil className="mx-auto mb-2 size-8 text-muted-foreground/40" />
-                        <p className="text-xs text-muted-foreground">
-                          Chưa có layer Assistant. Bấm <strong>Tải lên</strong> để thêm.
-                        </p>
-                      </div>
-                    )}
+                        )
+                      })}
+                    </ul>
                   </>
                 )}
               </CardContent>
@@ -1069,11 +986,12 @@ export default function Assistant() {
               <CardContent>
                 <ol className="relative space-y-2.5 border-l border-muted pl-5">
                   {[
-                    { step: 1, text: 'Tải ảnh gốc về máy' },
-                    { step: 2, text: 'Mở Photoshop / Krita / Procreate, vẽ trên layer trong suốt' },
-                    { step: 3, text: 'Xuất từng layer ra PNG (giữ nền trong suốt)' },
-                    { step: 4, text: 'Upload từng PNG ở đây — bật/tắt để xem hiệu ứng' },
-                    { step: 5, text: 'Gửi cho Mangaka duyệt (layer hoặc bản ghép)' },
+                    { step: 1, text: 'Mangaka gửi bản phác thảo PNG/WebP' },
+                    { step: 2, text: 'Assistant download ảnh gốc + từng layer (nếu có)' },
+                    { step: 3, text: 'Chỉnh trong Photoshop / Clip Studio Paint (không vẽ trên web)' },
+                    { step: 4, text: 'Upload lại từng bước: Sketch, Line Art, Color, Text, Effect, Final' },
+                    { step: 5, text: 'Preview, bật/tắt, sắp xếp thứ tự, quản lý version' },
+                    { step: 6, text: 'Gửi Mangaka duyệt (layer trong suốt hoặc bản ghép)' },
                   ].map(it => (
                     <li key={it.step} className="relative">
                       <span className="absolute -left-[26px] flex size-5 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground ring-2 ring-card">

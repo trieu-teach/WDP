@@ -128,6 +128,9 @@ export function normalizeSeries(raw, index = 0) {
     updated: s.updated ?? '—',
     progress: s.progress ?? 0,
     metadataComplete: s.metadataComplete !== false && Boolean(String(s.synopsis ?? '').trim()),
+    ebAssessment: s.ebAssessment && typeof s.ebAssessment === 'object'
+      ? JSON.parse(JSON.stringify(s.ebAssessment))
+      : null,
   }
   normalized.statusLabel = s.statusLabel ?? buildWorkflowStatusLabel(normalized)
   return normalized

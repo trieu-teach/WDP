@@ -233,7 +233,7 @@ export default function SeriesUploadDetail() {
                 <p className="text-xs text-muted-foreground">Khổ trang: 728×1030 px (chuẩn manga)</p>
               </CardContent>
               <Separator />
-              <CardContent className="space-y-2 pt-4">
+              <CardContent className="space-y-2 px-5 pb-5 pt-4 sm:px-6 sm:pb-6">
                 <Button asChild variant="outline" className="w-full">
                   <Link to={basePath}>
                     <ArrowLeft className="size-4" />
