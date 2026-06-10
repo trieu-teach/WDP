@@ -1,7 +1,5 @@
-import { mockService } from './mock.service.js'
 import { realService } from './real.service.js'
 
-// Đổi thành false để dùng API thật
-const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false'
+console.log('[API] Chế độ: REAL (backend thật)')
 
-export const api = USE_MOCK ? mockService : realService
+export const api = realService

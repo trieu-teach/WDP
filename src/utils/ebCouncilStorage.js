@@ -66,8 +66,23 @@ export function clampCouncilScore(value, max = 5) {
 
 /** DTB từng thành viên + DTB hội đồng (trung bình các thành viên đã chấm). */
 export function buildCouncilAggregate(seriesRecord, scoreFieldKeys) {
+  const emptyCriterionAverages = Object.fromEntries(
+    scoreFieldKeys.map((key) => [key, 0]),
+  )
   if (!seriesRecord?.members) {
-    return { memberRows: [], councilAverage: 0, scoredCount: 0 }
+    return {
+      memberRows: EB_COUNCIL_MEMBERS.map((member) => ({
+        ...member,
+        scored: false,
+        scores: {},
+        average: null,
+        assessedAt: null,
+        enteredBy: null,
+      })),
+      councilAverage: 0,
+      scoredCount: 0,
+      criterionAverages: emptyCriterionAverages,
+    }
   }
 
   const memberRows = EB_COUNCIL_MEMBERS.map((member) => {

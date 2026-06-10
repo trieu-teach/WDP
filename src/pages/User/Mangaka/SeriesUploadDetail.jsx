@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -13,6 +13,16 @@ import {
 import Header from '@/components/User/Header/Header.jsx'
 import Footer from '@/components/User/Footer/Footer.jsx'
 import { getSession, logout } from '@/lib/auth.js'
+import { seriesService } from '@/api/series.service.js'
+import { chaptersService } from '@/api/chapters.service.js'
+import { getApiErrorMessage } from '@/api/http.js'
+import {
+  apiChapterToAnnotator,
+  apiChapterToRow,
+  apiSeriesToUi,
+  findSeriesByIdOrSlug,
+  uiSeriesFormToApi,
+} from '@/utils/apiMappers.js'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -30,13 +40,9 @@ import {
   formatSeriesRating,
   slugifySeriesTitle,
 } from '@/utils/seriesModel.js'
-import {
-  readMangakaWorkspace,
-  resolveAnnotatorChapter,
-  updateSeriesInWorkspace,
-} from '@/utils/mangakaWorkspaceReader.js'
 import { LABEL_EDITOR_BOARD } from '@/constants/roleTerminology.js'
 import AddSeriesModal from './AddSeriesModal.jsx'
+import { seriesToForm, applySeriesFormUpdate } from '@/utils/seriesModel.js'
 import '@/styles/mangaPage.css'
 
 const NAV_LINKS = [
@@ -52,14 +58,7 @@ const STATUS_BADGE = {
   done: { label: 'Hoàn tất', className: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-500/15 dark:text-emerald-400' },
 }
 
-function findSeriesBySlug(seriesList, slug) {
-  if (!slug) return null
-  return seriesList.find(s => s.slug === slug)
-    ?? seriesList.find(s => slugifySeriesTitle(s.title) === slug)
-    ?? null
-}
-
-function seriesPath(series) {
+export function seriesPath(series) {
   const slug = series.slug ?? slugifySeriesTitle(series.title)
   return `/mangaka/series/${slug}`
 }
@@ -98,72 +97,102 @@ function Breadcrumb({ items }) {
 export default function SeriesUploadDetail() {
   const { seriesSlug, chapterId } = useParams()
   const navigate = useNavigate()
-  const [workspace, setWorkspace] = useState(() => readMangakaWorkspace())
+  const [series, setSeries] = useState(null)
+  const [chapterRows, setChapterRows] = useState([])
+  const [annotatorChapters, setAnnotatorChapters] = useState([])
+  const [loading, setLoading] = useState(true)
   const [editSeriesOpen, setEditSeriesOpen] = useState(false)
+
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    try {
+      const mine = await seriesService.getMine()
+      const list = (Array.isArray(mine) ? mine : []).map((s, i) => apiSeriesToUi(s, i))
+      const found = findSeriesByIdOrSlug(list, seriesSlug)
+      if (!found) {
+        setSeries(null)
+        return
+      }
+      const detail = await seriesService.getById(found.id)
+      const uiSeries = apiSeriesToUi({ ...found, ...detail }, 0)
+      setSeries(uiSeries)
+
+      const { chapters, seriesName } = await seriesService.getChapters(found.id)
+      const title = seriesName || uiSeries.title
+      const rows = (Array.isArray(chapters) ? chapters : []).map(ch => apiChapterToRow(ch, title))
+      setChapterRows(rows)
+
+      const annotators = await Promise.all(
+        rows.map(async (row) => {
+          try {
+            const pages = await chaptersService.getPages(row.id)
+            const ch = (Array.isArray(chapters) ? chapters : []).find(c => (c._id ?? c.id) === row.id)
+            return apiChapterToAnnotator(ch ?? row, pages, title)
+          } catch {
+            return apiChapterToAnnotator(row, [], title)
+          }
+        }),
+      )
+      setAnnotatorChapters(annotators)
+    } catch (err) {
+      console.error(getApiErrorMessage(err))
+      setSeries(null)
+    } finally {
+      setLoading(false)
+    }
+  }, [seriesSlug])
+
+  useEffect(() => {
+    void loadData()
+  }, [loadData])
 
   function handleLogout() {
     logout()
     navigate('/login')
   }
 
-  useEffect(() => {
-    const refresh = () => setWorkspace(readMangakaWorkspace())
-    window.addEventListener('storage', refresh)
-    window.addEventListener('mk-workspace-update', refresh)
-    return () => {
-      window.removeEventListener('storage', refresh)
-      window.removeEventListener('mk-workspace-update', refresh)
-    }
-  }, [])
-
-  useEffect(() => {
-    setWorkspace(readMangakaWorkspace())
-  }, [seriesSlug, chapterId])
-
-  const series = useMemo(
-    () => findSeriesBySlug(workspace.seriesList, seriesSlug),
-    [workspace.seriesList, seriesSlug],
-  )
-
-  const seriesTitle = series?.title ?? ''
-
-  const chapterRows = useMemo(() => {
-    if (!seriesTitle) return []
-    return workspace.chapterRows.filter(r => r.series === seriesTitle)
-  }, [workspace.chapterRows, seriesTitle])
-
   const activeRow = useMemo(
     () => (chapterId ? chapterRows.find(r => String(r.id) === String(chapterId)) : null),
     [chapterRows, chapterId],
   )
 
-  const activeAnnotator = useMemo(
-    () => (activeRow ? resolveAnnotatorChapter(activeRow, workspace.annotatorChapters) : null),
-    [activeRow, workspace.annotatorChapters],
-  )
+  const activeAnnotator = useMemo(() => {
+    if (!activeRow) return null
+    return annotatorChapters.find(ch => ch.id === activeRow.id) ?? null
+  }, [activeRow, annotatorChapters])
 
-  function handleEditSeriesSubmit(form) {
+  async function handleEditSeriesSubmit(form) {
     if (!series) return
-    const next = updateSeriesInWorkspace(series.id, form)
-    setWorkspace(next)
-    setEditSeriesOpen(false)
-    const updated = next.seriesList.find(s => s.id === series.id)
-    if (updated) {
+    try {
+      await seriesService.update(series.id, uiSeriesFormToApi(form))
+      await loadData()
+      setEditSeriesOpen(false)
+      const updated = applySeriesFormUpdate(series, form)
       const newSlug = updated.slug ?? slugifySeriesTitle(updated.title)
       if (newSlug !== seriesSlug) {
         navigate(`/mangaka/series/${newSlug}`, { replace: true })
       }
+    } catch (err) {
+      alert(getApiErrorMessage(err, 'Cập nhật series thất bại.'))
     }
   }
 
   const chapterCards = useMemo(() => chapterRows.map(row => {
-    const annot = resolveAnnotatorChapter(row, workspace.annotatorChapters)
+    const annot = annotatorChapters.find(ch => ch.id === row.id)
     const cover = annot?.cover?.url
       ? { url: annot.cover.url, name: annot.cover.name ?? 'cover' }
       : annot?.pages?.find(p => p?.url) ?? annot?.pages?.[0]
     const uploaded = annot?.pages?.length ?? row.pages ?? 0
     return { row, annot, cover, uploaded }
-  }), [chapterRows, workspace.annotatorChapters])
+  }), [chapterRows, annotatorChapters])
+
+  if (loading) {
+    return (
+      <DetailShell onLogout={handleLogout}>
+        <p className="text-muted-foreground">Đang tải series...</p>
+      </DetailShell>
+    )
+  }
 
   if (!series) {
     return (
@@ -172,7 +201,7 @@ export default function SeriesUploadDetail() {
           <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
             <Inbox className="size-12 text-muted-foreground/60" />
             <h1 className="text-2xl font-bold">Không tìm thấy truyện</h1>
-            <p className="text-muted-foreground">Series có thể đã bị xóa hoặc chưa được lưu trong phiên làm việc.</p>
+            <p className="text-muted-foreground">Series không tồn tại hoặc bạn chưa có quyền truy cập.</p>
             <Button asChild>
               <Link to="/mangaka">
                 <ArrowLeft className="size-4" />
@@ -201,355 +230,169 @@ export default function SeriesUploadDetail() {
 
     return (
       <DetailShell onLogout={handleLogout}>
-        <Breadcrumb
-          items={[
-            { label: 'Mangaka', to: '/mangaka' },
-            { label: series.title, to: basePath },
-            { label: `Ch. ${activeRow.num}` },
-          ]}
-        />
-
-        <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
-          <aside className="space-y-4">
-            <Card className="overflow-hidden p-0">
-              <div className="h-1.5" style={{ background: series.color }} />
-              <CardHeader className="pb-3">
-                <CardDescription>{series.title}</CardDescription>
-                <CardTitle className="text-2xl">Chapter {activeRow.num}</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge className={statusBadge.className} variant="secondary">{statusBadge.label}</Badge>
-                  <span className="text-xs text-muted-foreground">{activeRow.date}</span>
+        <Breadcrumb items={[
+          { to: '/mangaka', label: 'Workspace' },
+          { to: basePath, label: series.title },
+          { label: `Chapter ${activeRow.num}` },
+        ]} />
+        <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle>Chapter {activeRow.num}</CardTitle>
+                  <CardDescription>{series.title} · {activeRow.date}</CardDescription>
                 </div>
-                <p className="text-sm">
-                  {pages.length} trang đã upload
-                </p>
-                {progressPct !== null ? (
-                  <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                    <div className="h-full rounded-full transition-all" style={{ width: `${progressPct}%`, background: series.color }} />
+                <Badge className={statusBadge.className} variant="secondary">{statusBadge.label}</Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {staleOnly ? (
+                <p className="text-sm text-amber-600">Ảnh chapter chưa tải được — mở Upload & Ghi chú để xem lại.</p>
+              ) : null}
+              <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+                {pagesWithMedia.length ? pagesWithMedia.map((p, i) => (
+                  <div key={p.id ?? i} className="overflow-hidden rounded-lg border bg-muted/30">
+                    <img src={p.url} alt={p.name ?? `Trang ${i + 1}`} className="aspect-[728/1030] w-full object-cover" />
                   </div>
-                ) : null}
-                <p className="text-xs text-muted-foreground">Khổ trang: 728×1030 px (chuẩn manga)</p>
-              </CardContent>
-              <Separator />
-              <CardContent className="space-y-2 px-5 pb-5 pt-4 sm:px-6 sm:pb-6">
-                <Button asChild variant="outline" className="w-full">
-                  <Link to={basePath}>
-                    <ArrowLeft className="size-4" />
-                    Danh sách chapter
-                  </Link>
-                </Button>
-                <Button className="w-full" onClick={openAnnotate}>
-                  <PenSquare className="size-4" />
-                  Mở ghi chú / upload
-                </Button>
-              </CardContent>
-            </Card>
-
-            {staleOnly ? (
-              <Card className="border-amber-300 bg-amber-50/50 dark:border-amber-500/30 dark:bg-amber-500/5">
-                <CardContent className="space-y-2 p-4">
-                  <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">Ảnh chưa hiển thị được</p>
-                  <p className="text-xs text-amber-700 dark:text-amber-400">
-                    Dữ liệu cũ (trước khi lưu ảnh) — upload lại 1 lần trên Mangaka.
-                  </p>
-                  <Button size="sm" className="w-full" onClick={openAnnotate}>
-                    Upload lại chapter
-                  </Button>
+                )) : (
+                  <div className="col-span-full flex flex-col items-center gap-2 py-12 text-muted-foreground">
+                    <FileImage className="size-10 opacity-50" />
+                    <p className="text-sm">Chưa có trang nào</p>
+                  </div>
+                )}
+              </div>
+              <Button onClick={openAnnotate}>
+                <PenSquare className="size-4" />
+                Mở Upload & Ghi chú
+              </Button>
+            </CardContent>
+          </Card>
+          <aside className="space-y-4">
+            {progressPct != null ? (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Tiến độ upload</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">{pages.length} trang</div>
                 </CardContent>
               </Card>
             ) : null}
           </aside>
-
-          <section aria-label={`Trang chapter ${activeRow.num}`}>
-            {pages.length === 0 ? (
-              <Card>
-                <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-                  <ImageIcon className="size-12 text-muted-foreground/60" />
-                  <p>Chapter chưa có ảnh.</p>
-                  <Button onClick={openAnnotate}>
-                    <Upload className="size-4" />
-                    Upload tại Mangaka
-                  </Button>
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="space-y-6">
-                {pages.map((pg, i) => (
-                  <figure key={pg.id ?? i} className="space-y-2">
-                    <figcaption className="flex items-center gap-2 text-sm">
-                      <Badge variant="outline">Trang {i + 1}</Badge>
-                      {pg.name ? <span className="truncate text-xs text-muted-foreground">{pg.name}</span> : null}
-                    </figcaption>
-                    <div className="manga-page manga-page--reader mx-auto overflow-hidden rounded-lg border shadow-sm">
-                      {pg.url ? (
-                        <img
-                          src={pg.url}
-                          alt={`${series.title} Ch.${activeRow.num} trang ${i + 1}`}
-                          className="manga-page__media"
-                          loading="lazy"
-                          decoding="async"
-                        />
-                      ) : (
-                        <div className="manga-page__empty">
-                          <span>Trang {i + 1}</span>
-                          <p>728×1030 · upload lại để hiện ảnh</p>
-                        </div>
-                      )}
-                    </div>
-                  </figure>
-                ))}
-              </div>
-            )}
-          </section>
         </div>
       </DetailShell>
     )
   }
 
-  const initials = (series.title.length >= 2 ? series.title : `${series.title}●`).slice(0, 2)
-  const seriesBadge = STATUS_BADGE[series.status] ?? STATUS_BADGE.draft
-
   return (
     <DetailShell onLogout={handleLogout}>
-      <Breadcrumb
-        items={[
-          { label: 'Mangaka', to: '/mangaka' },
-          { label: series.title },
-        ]}
-      />
+      <Breadcrumb items={[
+        { to: '/mangaka', label: 'Workspace' },
+        { label: series.title },
+      ]} />
 
-      <Card className="mb-6 overflow-hidden p-0">
-        <div
-          className="relative px-6 py-8 sm:px-8 sm:py-10"
-          style={{
-            background: `linear-gradient(135deg, ${series.color}30, transparent 60%), linear-gradient(180deg, hsl(var(--background)), hsl(var(--background)))`,
-          }}
-        >
-          <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
-            <div
-              className="flex aspect-[3/4] w-32 shrink-0 items-center justify-center rounded-xl text-3xl font-extrabold text-white shadow-lg sm:w-40"
-              style={{ background: `linear-gradient(135deg, ${series.color}, ${series.color}88)` }}
-            >
-              {initials}
-            </div>
-            <div className="min-w-0 flex-1 space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge className={seriesBadge.className} variant="secondary">
-                  {series.statusLabel ?? seriesBadge.label}
-                </Badge>
-                {series.needsFullDebutPipeline ? (
-                  <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100 dark:bg-amber-500/15 dark:text-amber-400" variant="secondary">
-                    <Sparkles className="size-3" />
-                    Lần đầu · có {LABEL_EDITOR_BOARD}
-                  </Badge>
-                ) : null}
-              </div>
-              <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">{series.title}</h1>
-              {series.altTitle && series.altTitle !== series.title ? (
-                <p className="text-base text-muted-foreground">{series.altTitle}</p>
-              ) : null}
-              <p className="text-sm text-muted-foreground">{formatSeriesCardLine(series)}</p>
-              <p className="text-xs text-muted-foreground">
-                {formatSeriesCatalogLine(series)} · {formatSeriesRating(series)}
-              </p>
-              {series.authorName ? (
-                <p className="text-xs text-muted-foreground">Tác giả · <span className="font-medium text-foreground">{series.authorName}</span></p>
-              ) : null}
-            </div>
-          </div>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">{series.title}</h1>
+          <p className="mt-1 text-muted-foreground">{formatSeriesCardLine(series)}</p>
         </div>
-      </Card>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setEditSeriesOpen(true)}>Chỉnh sửa hồ sơ</Button>
+          <Button asChild>
+            <Link to="/mangaka" state={{ tab: 'annotate', series: series.title }}>
+              <Upload className="size-4" />
+              Upload chapter
+            </Link>
+          </Button>
+        </div>
+      </div>
 
-      <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
+      <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold">Danh sách chapter</h2>
+          {chapterCards.length === 0 ? (
+            <Card>
+              <CardContent className="py-12 text-center text-muted-foreground">
+                <ImageIcon className="mx-auto mb-3 size-10 opacity-40" />
+                Chưa có chapter — bấm Upload chapter để bắt đầu.
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {chapterCards.map(({ row, cover, uploaded }) => {
+                const badge = STATUS_BADGE[row.status] ?? STATUS_BADGE.draft
+                return (
+                  <Link key={row.id} to={`${basePath}/chapter/${row.id}`} className="group">
+                    <Card className="overflow-hidden transition-shadow hover:shadow-md">
+                      <div className="aspect-[16/9] bg-muted">
+                        {cover?.url ? (
+                          <img src={cover.url} alt="" className="size-full object-cover transition-transform group-hover:scale-[1.02]" />
+                        ) : (
+                          <div className="flex size-full items-center justify-center text-muted-foreground">
+                            <ImageIcon className="size-8 opacity-40" />
+                          </div>
+                        )}
+                      </div>
+                      <CardContent className="p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium">Ch. {row.num}</span>
+                          <Badge className={cn('text-xs', badge.className)} variant="secondary">{badge.label}</Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground">{uploaded} trang · {row.date}</p>
+                      </CardContent>
+                    </Card>
+                  </Link>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
         <aside className="space-y-4">
           <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Thống kê</CardTitle>
+            <CardHeader>
+              <CardTitle className="text-base">Hồ sơ series</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-lg border p-3">
-                  <div className="text-2xl font-bold">{chapterCards.length}</div>
-                  <p className="text-xs text-muted-foreground">Chapter upload</p>
+            <CardContent className="space-y-3 text-sm">
+              <p className="text-muted-foreground">{series.synopsis || 'Chưa có tóm tắt.'}</p>
+              <Separator />
+              <dl className="space-y-2">
+                <div className="flex justify-between gap-2">
+                  <dt className="text-muted-foreground">Định dạng</dt>
+                  <dd>{formatSeriesCatalogLine(series)}</dd>
                 </div>
-                <div className="rounded-lg border p-3">
-                  <div className="text-2xl font-bold">{series.chapters ?? 0}</div>
-                  <p className="text-xs text-muted-foreground">Tổng chapter</p>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-muted-foreground">Phân loại</dt>
+                  <dd>{formatSeriesRating(series)}</dd>
                 </div>
-                <div className="rounded-lg border p-3">
-                  <div className="text-2xl font-bold">{series.marks ?? 0}</div>
-                  <p className="text-xs text-muted-foreground">Vùng ghi chú</p>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-muted-foreground">Chapter</dt>
+                  <dd>{chapterRows.length}</dd>
                 </div>
-                <div className="rounded-lg border p-3">
-                  <div className="text-2xl font-bold">{Math.round(series.progress ?? 0)}%</div>
-                  <p className="text-xs text-muted-foreground">Tiến độ</p>
-                </div>
-              </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full rounded-full transition-all"
-                  style={{ width: `${Math.min(100, series.progress ?? 0)}%`, background: series.color }}
-                />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="space-y-2 p-4">
-              <Button variant="outline" className="w-full" onClick={() => setEditSeriesOpen(true)}>
-                <PenSquare className="size-4" />
-                Chỉnh sửa hồ sơ
-              </Button>
-              <Button asChild className="w-full">
-                <Link to="/mangaka" state={{ tab: 'annotate', series: series.title }}>
-                  <Upload className="size-4" />
-                  Upload chapter
-                </Link>
-              </Button>
-              <Button asChild variant="ghost" className="w-full">
-                <Link to="/mangaka" state={{ tab: 'annotate', series: series.title }}>
-                  <PenSquare className="size-4" />
-                  Ghi chú trang
-                </Link>
-              </Button>
+              </dl>
+              {series.needsFullDebutPipeline ? (
+                <p className="flex items-center gap-1 text-xs text-amber-600">
+                  <Sparkles className="size-3" />
+                  Luồng lần đầu · qua {LABEL_EDITOR_BOARD}
+                </p>
+              ) : null}
             </CardContent>
           </Card>
         </aside>
-
-        <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between gap-3">
-                <CardTitle className="text-lg">Giới thiệu</CardTitle>
-                <Button size="sm" variant="ghost" onClick={() => setEditSeriesOpen(true)}>
-                  Chỉnh sửa
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {!series.metadataComplete ? (
-                <p className="text-xs text-amber-600 dark:text-amber-400">
-                  Hồ sơ chưa đầy đủ — bấm "Chỉnh sửa" để bổ sung tóm tắt, thể loại…
-                </p>
-              ) : null}
-              <p className="text-sm leading-relaxed">
-                {series.synopsis || <span className="text-muted-foreground italic">Chưa có tóm tắt truyện.</span>}
-              </p>
-              {series.genres?.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5">
-                  {series.genres.map(g => (
-                    <Badge key={g} variant="secondary">{g}</Badge>
-                  ))}
-                </div>
-              ) : null}
-              {series.tags?.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5">
-                  {series.tags.map(t => (
-                    <Badge key={t} variant="outline">#{t}</Badge>
-                  ))}
-                </div>
-              ) : null}
-            </CardContent>
-          </Card>
-
-          <section className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold">Chapter đã upload</h2>
-                <p className="text-sm text-muted-foreground">Bấm chapter để xem toàn bộ ảnh trang</p>
-              </div>
-              <Badge variant="outline">{chapterCards.length} chapter</Badge>
-            </div>
-
-            {chapterCards.length === 0 ? (
-              <Card>
-                <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
-                  <FileImage className="size-10 text-muted-foreground/60" />
-                  <p>Chưa có chapter — bắt đầu upload từ workspace.</p>
-                  <Button asChild>
-                    <Link to="/mangaka" state={{ tab: 'annotate', series: series.title }}>
-                      <Upload className="size-4" />
-                      Upload chapter đầu tiên
-                    </Link>
-                  </Button>
-                </CardContent>
-              </Card>
-            ) : (
-              <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                {chapterCards.map(({ row, cover, uploaded }) => {
-                  const pct = uploaded > 0 ? Math.min(100, uploaded * 4) : null
-                  const chapterBadge = STATUS_BADGE[row.status] ?? STATUS_BADGE.draft
-                  return (
-                    <li key={row.id}>
-                      <Link
-                        to={`${basePath}/chapter/${row.id}`}
-                        className="group block"
-                      >
-                        <Card className="overflow-hidden p-0 transition-all group-hover:-translate-y-0.5 group-hover:shadow-md">
-                          <div className="relative manga-page manga-page--card overflow-hidden bg-muted">
-                            {cover?.url ? (
-                              <img src={cover.url} alt="" className="manga-page__media" />
-                            ) : (
-                              <div className="manga-page__empty">
-                                <span>Ch.{row.num}</span>
-                              </div>
-                            )}
-                            <span className="absolute inset-x-0 bottom-0 flex items-center justify-center bg-gradient-to-t from-black/60 to-transparent py-3 text-xs font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
-                              Xem trang →
-                            </span>
-                          </div>
-                          <CardContent className="space-y-2 p-3">
-                            <div className="flex items-center justify-between gap-2">
-                              <strong className="text-sm">Chapter {row.num}</strong>
-                              <Badge className={cn('text-[10px]', chapterBadge.className)} variant="secondary">
-                                {chapterBadge.label}
-                              </Badge>
-                            </div>
-                            <p className="text-xs text-muted-foreground">
-                              {uploaded} trang · {row.type}
-                            </p>
-                            {pct !== null ? (
-                              <div className="h-1 overflow-hidden rounded-full bg-muted">
-                                <div
-                                  className="h-full rounded-full transition-all"
-                                  style={{ width: `${pct}%`, background: series.color }}
-                                />
-                              </div>
-                            ) : null}
-                          </CardContent>
-                        </Card>
-                      </Link>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          </section>
-        </div>
       </div>
 
-      <div className="mt-8">
-        <Button asChild variant="ghost" size="sm">
-          <Link to="/mangaka" state={{ tab: 'series' }}>
-            <ArrowLeft className="size-4" />
-            Quay lại danh sách series
-          </Link>
-        </Button>
-      </div>
-
-      <AddSeriesModal
-        open={editSeriesOpen}
-        mode="edit"
-        initialSeries={series}
-        onClose={() => setEditSeriesOpen(false)}
-        onSubmit={handleEditSeriesSubmit}
-        authorName={series.authorName}
-        existingTitles={workspace.seriesList.map(s => s.title)}
-      />
+      {editSeriesOpen ? (
+        <AddSeriesModal
+          open={editSeriesOpen}
+          onClose={() => setEditSeriesOpen(false)}
+          onSubmit={handleEditSeriesSubmit}
+          initialForm={seriesToForm(series)}
+          existingTitles={[]}
+          excludeTitle={series.title}
+          mode="edit"
+        />
+      ) : null}
     </DetailShell>
   )
 }
-
-export { seriesPath }

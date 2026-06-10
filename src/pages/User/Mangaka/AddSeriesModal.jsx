@@ -1,19 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertCircle, Check } from 'lucide-react'
+import { AlertCircle, Check, ImagePlus, Sparkles } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
-  DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { Badge } from '@/components/ui/badge'
 import {
   Select,
   SelectContent,
@@ -22,7 +19,6 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Separator } from '@/components/ui/separator'
 import { cn } from '@/lib/utils'
 import { LABEL_EDITOR_BOARD, PATH_EDITOR_BOARD } from '@/constants/roleTerminology.js'
 import {
@@ -38,6 +34,7 @@ import {
   seriesToForm,
   validateSeriesForm,
 } from '@/utils/seriesModel.js'
+import './AddSeriesModal.css'
 
 export default function AddSeriesModal({
   open,
@@ -51,6 +48,8 @@ export default function AddSeriesModal({
   const isEdit = mode === 'edit' && initialSeries
 
   const [form, setForm] = useState(() => createEmptySeriesForm(authorName))
+  const [coverFile, setCoverFile] = useState(null)
+  const [coverPreview, setCoverPreview] = useState(null)
   const [touched, setTouched] = useState(false)
 
   useEffect(() => {
@@ -58,7 +57,9 @@ export default function AddSeriesModal({
     if (isEdit) setForm(seriesToForm(initialSeries))
     else setForm(createEmptySeriesForm(authorName))
     setTouched(false)
-  }, [open, isEdit, initialSeries?.id, authorName])
+    setCoverFile(null)
+    setCoverPreview(initialSeries?.coverImage ?? null)
+  }, [open, isEdit, initialSeries?.id, authorName, initialSeries?.coverImage])
 
   const titlesForValidation = useMemo(() => {
     if (!isEdit) return existingTitles
@@ -83,6 +84,11 @@ export default function AddSeriesModal({
     })
   }
 
+  function handleCoverChange(file) {
+    setCoverFile(file)
+    setCoverPreview(file ? URL.createObjectURL(file) : (initialSeries?.coverImage ?? null))
+  }
+
   function handleClose() {
     setForm(isEdit ? seriesToForm(initialSeries) : createEmptySeriesForm(authorName))
     setTouched(false)
@@ -93,7 +99,7 @@ export default function AddSeriesModal({
     e.preventDefault()
     setTouched(true)
     if (!validation.ok) return
-    onSubmit(form, { mode: isEdit ? 'edit' : 'create', seriesId: initialSeries?.id })
+    onSubmit(form, { mode: isEdit ? 'edit' : 'create', seriesId: initialSeries?.id, coverFile })
     if (!isEdit) setForm(createEmptySeriesForm(authorName))
     setTouched(false)
   }
@@ -102,82 +108,115 @@ export default function AddSeriesModal({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
-      <DialogContent className="flex max-h-[92vh] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
-        <DialogHeader className="relative shrink-0 space-y-1.5 border-b bg-gradient-to-br from-rose-50 via-background to-background px-6 py-5 dark:from-rose-500/10">
-          <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-rose-600 dark:text-rose-400">
-            <span className="inline-flex size-5 items-center justify-center rounded-full bg-rose-500 text-white">{isEdit ? '✎' : '+'}</span>
-            {isEdit ? 'Chỉnh sửa hồ sơ' : 'Tạo mới'}
-          </div>
-          <DialogTitle className="text-xl">{isEdit ? `Series · ${initialSeries?.title || ''}` : 'Đăng ký series mới'}</DialogTitle>
-          <DialogDescription>
+      <DialogContent className="series-modal bg-card sm:max-w-[640px]">
+        <div className="series-modal__hero">
+          <p className="series-modal__eyebrow">
+            <Sparkles className="size-3.5" />
+            {isEdit ? 'Chỉnh sửa hồ sơ' : 'Series mới'}
+          </p>
+          <DialogTitle className="series-modal__title">
+            {isEdit ? initialSeries?.title || 'Series' : 'Đăng ký series mới'}
+          </DialogTitle>
+          <DialogDescription className="series-modal__subtitle">
             {isEdit
-              ? 'Bổ sung hoặc sửa thông tin còn thiếu — tóm tắt, thể loại, phân loại…'
-              : 'Khai báo hồ sơ một lần — các bên khác chỉ xem tóm tắt.'}
+              ? 'Cập nhật thông tin series — tóm tắt, thể loại và cài đặt phát hành.'
+              : 'Tạo hồ sơ series một lần. Assistant, Editor và EB chỉ xem phần tóm tắt.'}
           </DialogDescription>
           {isEdit && !initialSeries.metadataComplete ? (
-            <Alert className="mt-3 border-amber-200 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/5">
-              <AlertCircle className="size-4 text-amber-600" />
-              <AlertDescription className="text-amber-700 dark:text-amber-400">
-                Hồ sơ chưa đầy đủ — nên điền tóm tắt và thể loại.
+            <Alert className="series-modal__notice mt-4 border-0">
+              <AlertCircle className="size-4 text-primary" />
+              <AlertDescription>
+                Hồ sơ chưa đầy đủ — nên điền tóm tắt và chọn ít nhất một thể loại.
               </AlertDescription>
             </Alert>
           ) : null}
-        </DialogHeader>
+        </div>
 
         <form id="series-form" onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6">
-            <div className="space-y-7">
-              <section className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="size-6 justify-center p-0 text-xs">1</Badge>
-                  <h3 className="font-semibold">Thông tin truyện</h3>
+          <div className="series-modal__body">
+            <div className="series-modal__flow">
+              <div className="series-modal__block">
+                <div className="series-modal__block-head">
+                  <h3 className="series-modal__block-title">Thông tin cơ bản</h3>
+                  <span className="series-modal__block-note">Bước 1/4</span>
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="series-title">
-                    Tên hiển thị <span className="text-destructive">*</span>
-                  </Label>
-                  <Input
-                    id="series-title"
-                    value={form.title}
-                    onChange={e => patch({ title: e.target.value })}
-                    placeholder="Ví dụ: Huyền Long Ký"
-                    maxLength={120}
-                    autoFocus
-                    aria-invalid={!!err('title')}
-                  />
-                  {err('title') ? <p className="text-xs text-destructive">{err('title')}</p> : null}
-                </div>
-
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label htmlFor="series-alt">Tên khác / Romaji</Label>
-                    <Input
-                      id="series-alt"
-                      value={form.altTitle}
-                      onChange={e => patch({ altTitle: e.target.value })}
-                      placeholder="Tùy chọn"
-                      maxLength={120}
+                <div className="series-modal__intro">
+                  <label className="series-modal__dropzone">
+                    {coverPreview ? (
+                      <>
+                        <img src={coverPreview} alt="Xem trước bìa" />
+                        <span className="series-modal__dropzone-overlay">Đổi ảnh bìa</span>
+                      </>
+                    ) : (
+                      <span className="series-modal__dropzone-text">
+                        <span className="series-modal__dropzone-icon">
+                          <ImagePlus className="size-4" />
+                        </span>
+                        Ảnh bìa
+                        <span className="opacity-70">Tuỳ chọn</span>
+                      </span>
+                    )}
+                    <input
+                      className="series-modal__file-input"
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={e => handleCoverChange(e.target.files?.[0] ?? null)}
                     />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="series-tags">Tag</Label>
-                    <Input
-                      id="series-tags"
-                      value={form.tags}
-                      onChange={e => patch({ tags: e.target.value })}
-                      placeholder="school-life, magic"
-                      maxLength={120}
-                    />
+                  </label>
+
+                  <div className="series-modal__intro-fields">
+                    <div className="series-modal__field">
+                      <Label htmlFor="series-title">
+                        Tên hiển thị <span className="text-destructive">*</span>
+                      </Label>
+                      <Input
+                        id="series-title"
+                        className="series-modal__control"
+                        value={form.title}
+                        onChange={e => patch({ title: e.target.value })}
+                        placeholder="Ví dụ: Huyền Long Ký"
+                        maxLength={120}
+                        autoFocus
+                        aria-invalid={!!err('title')}
+                      />
+                      {err('title') ? <p className="series-modal__error">{err('title')}</p> : null}
+                    </div>
+
+                    <div className="series-modal__grid-2">
+                      <div className="series-modal__field">
+                        <Label htmlFor="series-alt">Tên khác / Romaji</Label>
+                        <Input
+                          id="series-alt"
+                          className="series-modal__control"
+                          value={form.altTitle}
+                          onChange={e => patch({ altTitle: e.target.value })}
+                          placeholder="Tùy chọn"
+                          maxLength={120}
+                        />
+                      </div>
+                      <div className="series-modal__field">
+                        <Label htmlFor="series-tags">Tag</Label>
+                        <Input
+                          id="series-tags"
+                          className="series-modal__control"
+                          value={form.tags}
+                          onChange={e => patch({ tags: e.target.value })}
+                          placeholder="school-life, magic"
+                          maxLength={120}
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                <div className="space-y-2">
+                <div className="series-modal__field">
                   <Label htmlFor="series-synopsis">
                     Tóm tắt / giới thiệu <span className="text-destructive">*</span>
                   </Label>
                   <Textarea
                     id="series-synopsis"
+                    className={cn('series-modal__control', 'series-modal__textarea')}
                     value={form.synopsis}
                     onChange={e => patch({ synopsis: e.target.value })}
                     placeholder="Cốt truyện, bối cảnh, nhân vật chính..."
@@ -185,53 +224,50 @@ export default function AddSeriesModal({
                     maxLength={2000}
                     aria-invalid={!!err('synopsis')}
                   />
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>{form.synopsis.length}/2000 · tối thiểu 30 ký tự</span>
-                    {err('synopsis') ? <span className="text-destructive">{err('synopsis')}</span> : null}
+                  <div className="series-modal__counter">
+                    <span>{form.synopsis.length}/2000</span>
+                    {err('synopsis') ? <span className="series-modal__error">{err('synopsis')}</span> : null}
                   </div>
                 </div>
-              </section>
+              </div>
 
-              <Separator />
+              <div className="series-modal__divider" />
 
-              <section className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="size-6 justify-center p-0 text-xs">2</Badge>
-                  <h3 className="font-semibold">Phân loại</h3>
+              <div className="series-modal__block">
+                <div className="series-modal__block-head">
+                  <h3 className="series-modal__block-title">Phân loại</h3>
+                  <span className="series-modal__block-note">Bước 2/4</span>
                 </div>
 
-                <div className="space-y-2">
-                  <Label>Thể loại <span className="text-xs text-muted-foreground">(tối đa 5)</span></Label>
-                  <div className="flex flex-wrap gap-1.5">
-                    {SERIES_GENRES.map(g => {
-                      const active = form.genres.includes(g)
-                      return (
-                        <button
-                          key={g}
-                          type="button"
-                          onClick={() => toggleGenre(g)}
-                          aria-pressed={active}
-                          className={cn(
-                            'inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-medium transition-colors',
-                            active
-                              ? 'border-primary bg-primary text-primary-foreground'
-                              : 'border-input bg-background hover:border-primary/50 hover:bg-muted',
-                          )}
-                        >
-                          {active ? <Check className="size-3" /> : null}
-                          {g}
-                        </button>
-                      )
-                    })}
+                <div className="series-modal__field">
+                  <Label>Thể loại <span className="series-modal__hint">· tối đa 5</span></Label>
+                  <div className="series-modal__genre-panel">
+                    <div className="series-modal__genres">
+                      {SERIES_GENRES.map(g => {
+                        const active = form.genres.includes(g)
+                        return (
+                          <button
+                            key={g}
+                            type="button"
+                            onClick={() => toggleGenre(g)}
+                            aria-pressed={active}
+                            className={cn('series-modal__genre', active && 'series-modal__genre--active')}
+                          >
+                            {active ? <Check className="size-3" strokeWidth={2.5} /> : null}
+                            {g}
+                          </button>
+                        )
+                      })}
+                    </div>
                   </div>
-                  {err('genres') ? <p className="text-xs text-destructive">{err('genres')}</p> : null}
+                  {err('genres') ? <p className="series-modal__error">{err('genres')}</p> : null}
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="space-y-2">
+                <div className="series-modal__grid-2">
+                  <div className="series-modal__field">
                     <Label>Độc giả mục tiêu</Label>
                     <Select value={form.demographic} onValueChange={v => patch({ demographic: v })}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="series-modal__select"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {SERIES_DEMOGRAPHICS.map(d => (
                           <SelectItem key={d.value} value={d.value}>{d.label}</SelectItem>
@@ -239,10 +275,10 @@ export default function AddSeriesModal({
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="space-y-2">
+                  <div className="series-modal__field">
                     <Label>Định dạng</Label>
                     <Select value={form.format} onValueChange={v => patch({ format: v })}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="series-modal__select"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {SERIES_FORMATS.map(f => (
                           <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>
@@ -250,10 +286,10 @@ export default function AddSeriesModal({
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="space-y-2">
+                  <div className="series-modal__field">
                     <Label>Ngôn ngữ gốc</Label>
                     <Select value={form.language} onValueChange={v => patch({ language: v })}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="series-modal__select"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {SERIES_LANGUAGES.map(l => (
                           <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>
@@ -261,10 +297,10 @@ export default function AddSeriesModal({
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="space-y-2">
+                  <div className="series-modal__field">
                     <Label>Phân loại nội dung</Label>
                     <Select value={form.contentRating} onValueChange={v => patch({ contentRating: v })}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="series-modal__select"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {SERIES_CONTENT_RATINGS.map(r => (
                           <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
@@ -273,20 +309,20 @@ export default function AddSeriesModal({
                     </Select>
                   </div>
                 </div>
-              </section>
+              </div>
 
-              <Separator />
+              <div className="series-modal__divider" />
 
-              <section className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="size-6 justify-center p-0 text-xs">3</Badge>
-                  <h3 className="font-semibold">Phát hành & luồng duyệt</h3>
+              <div className="series-modal__block">
+                <div className="series-modal__block-head">
+                  <h3 className="series-modal__block-title">Phát hành</h3>
+                  <span className="series-modal__block-note">Bước 3/4</span>
                 </div>
 
-                <div className="space-y-2">
+                <div className="series-modal__field">
                   <Label>Trạng thái phát hành</Label>
                   <Select value={form.publicationStatus} onValueChange={v => patch({ publicationStatus: v })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="series-modal__select"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {SERIES_PUBLICATION_STATUSES.map(p => (
                         <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
@@ -295,9 +331,9 @@ export default function AddSeriesModal({
                   </Select>
                 </div>
 
-                <div className="space-y-2">
+                <div className="series-modal__field">
                   <Label>Loại phát hành</Label>
-                  <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="series-modal__publish">
                     {SERIES_PUBLISH_TYPES.map(pt => {
                       const active = form.publishType === pt.value
                       return (
@@ -307,14 +343,13 @@ export default function AddSeriesModal({
                           onClick={() => patch({ publishType: pt.value })}
                           aria-pressed={active}
                           className={cn(
-                            'flex flex-col items-start gap-1 rounded-xl border-2 p-3 text-left transition-colors',
-                            active
-                              ? 'border-primary bg-primary/5'
-                              : 'border-border hover:border-primary/50 hover:bg-muted/50',
+                            'series-modal__publish-card',
+                            active && 'series-modal__publish-card--active',
                           )}
                         >
-                          <span className="text-sm font-medium">{pt.label}</span>
-                          <span className="text-xs text-muted-foreground">{pt.hint}</span>
+                          <span className="series-modal__publish-dot" aria-hidden />
+                          <span className="series-modal__publish-title">{pt.label}</span>
+                          <span className="series-modal__publish-hint">{pt.hint}</span>
                         </button>
                       )
                     })}
@@ -322,9 +357,9 @@ export default function AddSeriesModal({
                 </div>
 
                 {form.publishType === 'debut' ? (
-                  <Alert>
-                    <AlertCircle className="size-4" />
-                    <AlertDescription>
+                  <Alert className="series-modal__notice border-0">
+                    <AlertCircle className="size-4 text-primary" />
+                    <AlertDescription className="text-sm">
                       {LABEL_EDITOR_BOARD} duyệt trên{' '}
                       <Link to={PATH_EDITOR_BOARD} className="font-medium text-primary hover:underline">
                         trang {LABEL_EDITOR_BOARD}
@@ -333,16 +368,16 @@ export default function AddSeriesModal({
                     </AlertDescription>
                   </Alert>
                 ) : null}
-              </section>
+              </div>
 
-              <Separator />
+              <div className="series-modal__divider" />
 
-              <section className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="size-6 justify-center p-0 text-xs">4</Badge>
-                  <h3 className="font-semibold">Màu bìa (draft)</h3>
+              <div className="series-modal__block">
+                <div className="series-modal__block-head">
+                  <h3 className="series-modal__block-title">Màu nhận diện</h3>
+                  <span className="series-modal__block-note">Bước 4/4</span>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="series-modal__colors">
                   {SERIES_PALETTE.map(c => (
                     <button
                       key={c}
@@ -350,29 +385,26 @@ export default function AddSeriesModal({
                       onClick={() => patch({ color: c })}
                       aria-pressed={form.color === c}
                       aria-label={`Màu ${c}`}
-                      className={cn(
-                        'size-9 rounded-lg ring-offset-background transition-transform hover:scale-110',
-                        form.color === c && 'ring-2 ring-primary ring-offset-2',
-                      )}
+                      className={cn('series-modal__color', form.color === c && 'series-modal__color--active')}
                       style={{ background: c }}
                     />
                   ))}
                 </div>
-              </section>
+              </div>
             </div>
           </div>
 
-          <DialogFooter className="shrink-0 gap-2 border-t bg-card/95 px-6 py-3 backdrop-blur sm:gap-3">
+          <div className="series-modal__foot">
             {touched && !validation.ok ? (
-              <p className="mr-auto self-center text-xs text-destructive sm:order-first">
-                Vui lòng kiểm tra các trường còn thiếu
-              </p>
+              <p className="series-modal__foot-error">Vui lòng kiểm tra các trường còn thiếu</p>
             ) : null}
-            <Button type="button" variant="outline" onClick={handleClose}>Hủy</Button>
-            <Button type="submit" form="series-form" className="min-w-[140px]">
+            <Button type="button" variant="outline" className="series-modal__cancel" onClick={handleClose}>
+              Hủy
+            </Button>
+            <Button type="submit" form="series-form" className="series-modal__submit">
               {isEdit ? 'Lưu thay đổi' : 'Tạo series draft'}
             </Button>
-          </DialogFooter>
+          </div>
         </form>
       </DialogContent>
     </Dialog>

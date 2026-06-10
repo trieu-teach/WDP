@@ -13,11 +13,13 @@ import Profile from '@/pages/Admin/Profile/Profile.jsx'
 import Home from '@/pages/User/Home/Home.jsx'
 import Login from '@/pages/User/Login/Login.jsx'
 import Register from '@/pages/User/Register/Register.jsx'
+import RegisterVerifyOtp from '@/pages/User/Register/RegisterVerifyOtp.jsx'
 import Mangaka from '@/pages/User/Mangaka/Mangaka.jsx'
 import SeriesUploadDetail from '@/pages/User/Mangaka/SeriesUploadDetail.jsx'
 import Assistant from '@/pages/User/Assistant/Assistant.jsx'
 import Eb from '@/pages/User/Eb/Eb.jsx'
 import TantouEditor from '@/pages/User/Tantou/TantouEditor.jsx'
+import SessionBootstrap from '@/components/auth/SessionBootstrap.jsx'
 
 function AdminShell() {
   const navigate = useNavigate()
@@ -34,10 +36,12 @@ function AdminShell() {
 export default function App() {
   return (
     <BrowserRouter>
+      <SessionBootstrap />
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/register/verify-otp" element={<RegisterVerifyOtp />} />
         <Route path="/mangaka" element={<Mangaka />} />
         <Route path="/mangaka/series/:seriesSlug" element={<SeriesUploadDetail />} />
         <Route path="/mangaka/series/:seriesSlug/chapter/:chapterId" element={<SeriesUploadDetail />} />

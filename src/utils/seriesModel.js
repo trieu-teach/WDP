@@ -230,7 +230,7 @@ export function validateSeriesForm(form, existingTitles = [], options = {}) {
   }
 
   const synopsis = String(form.synopsis ?? '').trim()
-  if (synopsis.length < 30) errors.synopsis = 'Tóm tắt nên có ít nhất 30 ký tự (mô tả cốt truyện / bối cảnh).'
+  if (!synopsis) errors.synopsis = 'Vui lòng nhập tóm tắt.'
 
   if (!Array.isArray(form.genres) || form.genres.length === 0) {
     errors.genres = 'Chọn ít nhất một thể loại.'
@@ -319,7 +319,7 @@ export function applySeriesFormUpdate(existing, form) {
     needsFullDebutPipeline,
     tags,
     color: form.color ?? base.color,
-    metadataComplete: synopsis.length >= 30,
+    metadataComplete: synopsis.length > 0,
     updated: 'Vừa cập nhật hồ sơ',
   })
 

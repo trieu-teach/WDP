@@ -159,7 +159,8 @@ function getClassification(average) {
 }
 
 function buildScoreFields(scoreType) {
-  return [...COMMON_CRITERIA, TYPE_CRITERIA[scoreType]];
+  const typeField = TYPE_CRITERIA[scoreType] ?? TYPE_CRITERIA.color;
+  return [...COMMON_CRITERIA, typeField];
 }
 
 function buildInitialNotes() {
@@ -231,9 +232,9 @@ function CouncilScoresTable({
                     {row.scored ? (
                       <span className="inline-flex flex-col items-center gap-0.5">
                         <span className="font-medium">
-                          {clampScore(row.scores[field.key]).toFixed(1)}
+                          {clampScore(row.scores?.[field.key]).toFixed(1)}
                         </span>
-                        <ScoreStars value={row.scores[field.key]} />
+                        <ScoreStars value={row.scores?.[field.key]} />
                       </span>
                     ) : (
                       <span className="text-muted-foreground">—</span>
@@ -258,7 +259,7 @@ function CouncilScoresTable({
                 key={field.key}
                 className="px-2 py-3 text-center tabular-nums text-foreground"
               >
-                {criterionAverages[field.key] != null
+                {criterionAverages?.[field.key] != null
                   ? criterionAverages[field.key].toFixed(1)
                   : "—"}
               </td>
@@ -551,9 +552,19 @@ export default function Eb() {
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label>Series đang chấm</Label>
-                  <Select value={activeTitle} onValueChange={setSelectedTitle}>
+                  <Select
+                    value={activeTitle || undefined}
+                    onValueChange={setSelectedTitle}
+                    disabled={pending.length === 0}
+                  >
                     <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Chọn series trong hàng chờ" />
+                      <SelectValue
+                        placeholder={
+                          pending.length
+                            ? "Chọn series trong hàng chờ"
+                            : "Chưa có series chờ EB duyệt"
+                        }
+                      />
                     </SelectTrigger>
                     <SelectContent>
                       {pending.map((item) => (
@@ -563,6 +574,13 @@ export default function Eb() {
                       ))}
                     </SelectContent>
                   </Select>
+                  {pending.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      Hàng chờ lấy từ localStorage (demo). Mangaka gửi series debut qua
+                      Tantou → EB sẽ thấy ở đây. Chưa nối API{" "}
+                      <code className="text-[10px]">/submissions/eb</code>.
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="space-y-2">
