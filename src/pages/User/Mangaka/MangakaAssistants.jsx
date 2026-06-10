@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   CheckCircle2,
@@ -49,12 +49,9 @@ import {
   specialtyLabel,
   styleLabel,
 } from '@/constants/assistantCatalog.js'
-import {
-  createHireRequest,
-  getMangakaRoster,
-  listCatalogForMangaka,
-  listRequestsForMangaka,
-} from '@/utils/assistantRosterStorage.js'
+import { useMangakaCooperation } from '@/hooks/useMangakaCooperation.js'
+import { getApiErrorMessage } from '@/api/http.js'
+import { isPendingRequest, requestStatusLabel } from '@/utils/cooperationMappers.js'
 
 const AVAILABILITY_FILTERS = [
   { value: 'all', label: 'Tất cả' },
@@ -67,6 +64,7 @@ const AVAILABILITY_BADGE = {
   available: { label: 'Sẵn sàng', className: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-500/15 dark:text-emerald-400' },
   mine: { label: 'Đội của bạn', className: 'bg-violet-100 text-violet-700 hover:bg-violet-100 dark:bg-violet-500/15 dark:text-violet-400' },
   pending: { label: 'Chờ phản hồi', className: 'bg-amber-100 text-amber-700 hover:bg-amber-100 dark:bg-amber-500/15 dark:text-amber-400' },
+  unavailable: { label: 'Chưa liên kết tài khoản', className: 'bg-zinc-100 text-zinc-600 hover:bg-zinc-100 dark:bg-zinc-500/15 dark:text-zinc-400' },
 }
 
 function AssistantAvatar({ profile, size = 'default', className }) {
@@ -100,7 +98,7 @@ function ActionButton({ profile }) {
   }
   return (
     <Button className="h-9 w-full" size="sm" variant="outline" disabled>
-      Không thể gửi yêu cầu
+      Chưa có tài khoản hệ thống
     </Button>
   )
 }
@@ -123,10 +121,16 @@ function AssistantProfileCard({ profile, onHire }) {
             <p className="truncate text-base font-semibold leading-tight">{profile.name}</p>
             <Badge className={cn('mt-1.5 w-fit', badge.className)}>{badge.label}</Badge>
             <p className="mt-1 truncate text-sm text-muted-foreground">{profile.handle}</p>
-            <div className="mt-2 flex h-5 items-center gap-1 text-xs text-amber-600">
-              <Star className="size-3 shrink-0 fill-current" />
-              <strong>{profile.rating}</strong>
-              <span className="text-muted-foreground">· {profile.completedPages} trang</span>
+            <div className="mt-2 flex h-5 items-center gap-1 text-xs text-muted-foreground">
+              {profile.rating > 0 ? (
+                <>
+                  <Star className="size-3 shrink-0 fill-amber-500 text-amber-500" />
+                  <strong className="text-amber-600">{profile.rating}</strong>
+                  <span>· {profile.completedPages} trang</span>
+                </>
+              ) : (
+                <span className="truncate">{profile.email || profile.handle}</span>
+              )}
             </div>
           </div>
         </div>
@@ -172,35 +176,24 @@ function AssistantProfileCard({ profile, onHire }) {
   )
 }
 
-export default function MangakaAssistants({ mangakaId, mangakaName }) {
+export default function MangakaAssistants() {
+  const {
+    roster,
+    sentRequests,
+    catalog,
+    loading,
+    sendHireRequest,
+    refresh,
+  } = useMangakaCooperation()
+
   const [query, setQuery] = useState('')
   const [specialtyFilter, setSpecialtyFilter] = useState('all')
   const [styleFilter, setStyleFilter] = useState('all')
   const [availabilityFilter, setAvailabilityFilter] = useState('all')
-  const [catalog, setCatalog] = useState([])
-  const [roster, setRoster] = useState([])
-  const [requests, setRequests] = useState([])
   const [hireTarget, setHireTarget] = useState(null)
   const [hireNote, setHireNote] = useState('')
+  const [manualAssistantId, setManualAssistantId] = useState('')
   const [sending, setSending] = useState(false)
-
-  const reload = useCallback(() => {
-    if (!mangakaId) return
-    setCatalog(listCatalogForMangaka(mangakaId))
-    setRoster(getMangakaRoster(mangakaId).filter(r => r.status === 'active'))
-    setRequests(listRequestsForMangaka(mangakaId))
-  }, [mangakaId])
-
-  useEffect(() => {
-    reload()
-    const onSync = () => reload()
-    window.addEventListener('storage', onSync)
-    window.addEventListener('mk-assistant-roster-update', onSync)
-    return () => {
-      window.removeEventListener('storage', onSync)
-      window.removeEventListener('mk-assistant-roster-update', onSync)
-    }
-  }, [reload])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -222,8 +215,8 @@ export default function MangakaAssistants({ mangakaId, mangakaName }) {
   }), [catalog, roster.length])
 
   const pendingRequests = useMemo(
-    () => requests.filter(r => r.status === 'pending'),
-    [requests],
+    () => sentRequests.filter(r => isPendingRequest(r.status) || r.status === 'accepted_meet'),
+    [sentRequests],
   )
 
   function openHireDialog(profile) {
@@ -233,20 +226,21 @@ export default function MangakaAssistants({ mangakaId, mangakaName }) {
   }
 
   async function submitHireRequest() {
-    if (!hireTarget || !mangakaId) return
+    if (!hireTarget) return
+    const assistantId = hireTarget.accountId ?? manualAssistantId.trim()
+    if (!assistantId) {
+      toast.error('Assistant chưa có user ID trên hệ thống — nhập Assistant User ID.')
+      return
+    }
     setSending(true)
     try {
-      createHireRequest({
-        mangakaId,
-        mangakaName,
-        assistantId: hireTarget.id,
-        note: hireNote,
-      })
-      toast.success(`Đã gửi yêu cầu thuê ${hireTarget.name} — chờ Assistant chấp nhận.`)
+      await sendHireRequest({ assistantId, message: hireNote })
+      toast.success(`Đã gửi yêu cầu hợp tác cho ${hireTarget.name} — chờ Assistant phản hồi.`)
       setHireTarget(null)
-      reload()
+      setManualAssistantId('')
+      void refresh()
     } catch (err) {
-      toast.error(err?.message ?? 'Không gửi được yêu cầu.')
+      toast.error(getApiErrorMessage(err, 'Không gửi được yêu cầu.'))
     } finally {
       setSending(false)
     }
@@ -301,7 +295,7 @@ export default function MangakaAssistants({ mangakaId, mangakaName }) {
                 <Users className="size-4 text-primary" />
                 Đội Assistant
               </CardTitle>
-              <CardDescription>Đã chấp nhận yêu cầu thuê</CardDescription>
+              <CardDescription>Đã chốt hợp tác (API)</CardDescription>
             </CardHeader>
             <CardContent className="min-h-[120px] flex-1">
               {roster.length === 0 ? (
@@ -346,9 +340,10 @@ export default function MangakaAssistants({ mangakaId, mangakaName }) {
                 {pendingRequests.map(r => (
                   <div
                     key={r.id}
-                    className="flex h-11 items-center rounded-lg border bg-background/80 px-3 text-sm"
+                    className="flex flex-col gap-0.5 rounded-lg border bg-background/80 px-3 py-2 text-sm"
                   >
                     <strong className="truncate">{r.assistantName}</strong>
+                    <span className="text-[11px] text-muted-foreground">{requestStatusLabel(r.status)}</span>
                   </div>
                 ))}
               </CardContent>
@@ -406,7 +401,13 @@ export default function MangakaAssistants({ mangakaId, mangakaName }) {
             </CardContent>
           </Card>
 
-          {filtered.length === 0 ? (
+          {loading ? (
+            <Card>
+              <CardContent className="py-16 text-center text-muted-foreground">
+                Đang tải danh sách Assistant...
+              </CardContent>
+            </Card>
+          ) : filtered.length === 0 ? (
             <Card>
               <CardContent className="py-16 text-center text-muted-foreground">
                 Không có Assistant phù hợp bộ lọc — thử đổi từ khóa hoặc filter.
@@ -448,6 +449,16 @@ export default function MangakaAssistants({ mangakaId, mangakaName }) {
                   <p className="truncate text-xs text-muted-foreground">{hireTarget.handle}</p>
                 </div>
               </div>
+              {!hireTarget.accountId ? (
+                <div className="space-y-2">
+                  <Label>Assistant User ID</Label>
+                  <Input
+                    placeholder="MongoDB userId của Assistant đã đăng ký"
+                    value={manualAssistantId}
+                    onChange={e => setManualAssistantId(e.target.value)}
+                  />
+                </div>
+              ) : null}
               <div className="space-y-2">
                 <Label>Lời nhắn (tuỳ chọn)</Label>
                 <Textarea

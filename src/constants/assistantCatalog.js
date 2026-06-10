@@ -18,7 +18,7 @@ export const ASSISTANT_STYLES = [
 export const ASSISTANT_CATALOG = [
   {
     id: 'asst-demo',
-    userId: 2,
+    accountId: '6a27d5d41725192a4826edba',
     name: 'Demo Assistant',
     handle: '@demo_assistant',
     avatarColor: '#8b5cf6',

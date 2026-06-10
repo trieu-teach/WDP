@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
@@ -50,19 +50,17 @@ import {
   sortLayersForStack,
 } from '@/utils/assistantProductionLayerUtils.js'
 import {
-  hydrateAssistantSubmission,
-  listAssistantSubmissions,
   loadAssistantPaintLayers,
   migrateAssistantStorage,
-  pushAssistantDeliverable,
   saveAssistantPaintLayers,
-  updateAssistantSubmission,
 } from '@/utils/assistantWorkspaceStorage.js'
-import { getAssistantByUserId } from '@/constants/assistantCatalog.js'
-import {
-  listPendingRequestsForAssistantUser,
-  respondToHireRequest,
-} from '@/utils/assistantRosterStorage.js'
+import { useAssistantAssignments } from '@/hooks/useAssistantAssignments.js'
+import { useAssistantTasks } from '@/hooks/useAssistantTasks.js'
+import { useAssistantCooperation } from '@/hooks/useAssistantCooperation.js'
+import { apiNoteToUi } from '@/utils/apiMappers.js'
+import { getApiErrorMessage } from '@/api/http.js'
+import { chaptersService } from '@/api/chapters.service.js'
+import { isMeetingPhase, isPendingRequest, requestStatusLabel } from '@/utils/cooperationMappers.js'
 import '@/styles/mangaPage.css'
 
 const NAV_LINKS = [{ to: '/', label: 'Trang chủ' }]
@@ -89,11 +87,27 @@ const STATUS_BADGE = {
   submitted_to_mangaka: { label: 'Đã gửi', className: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-500/15 dark:text-emerald-400' },
 }
 
-const INCOME_MONTHS = [
-  { month: '05/2026', pages: 24, amount: '4.2M' },
-  { month: '04/2026', pages: 19, amount: '3.1M' },
-  { month: '03/2026', pages: 22, amount: '3.6M' },
-]
+const TASK_STATUS_LABEL = {
+  pending: 'Chờ nhận',
+  in_progress: 'Đang làm',
+  submitted: 'Chờ duyệt',
+  approved: 'Đã duyệt',
+  revision: 'Cần sửa',
+}
+
+function formatEarnings(value) {
+  if (value == null || Number.isNaN(Number(value))) return '—'
+  const n = Number(value)
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`
+  return String(n)
+}
+
+async function dataUrlToFile(dataUrl, filename = 'result.png') {
+  const res = await fetch(dataUrl)
+  const blob = await res.blob()
+  return new File([blob], filename, { type: blob.type || 'image/png' })
+}
 
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -246,152 +260,203 @@ export default function Assistant() {
   const navigate = useNavigate()
   const user = getSession()
 
-  const [submissions, setSubmissions] = useState(() => listAssistantSubmissions())
-  const [selectedId, setSelectedId] = useState(() => listAssistantSubmissions()[0]?.id ?? null)
+  const { assignments, loading: assignmentsLoading, refresh: refreshAssignments } = useAssistantAssignments()
+  const {
+    actionable: cooperationRequests,
+    cooperations,
+    loading: cooperationLoading,
+    acceptMeet,
+    rejectRequest,
+    acceptCooperation,
+    declineCooperation,
+  } = useAssistantCooperation()
+  const [selectedChapterId, setSelectedChapterId] = useState(null)
+  const [pageIndex, setPageIndex] = useState(0)
+  const [pageNotes, setPageNotes] = useState([])
+  const [notesLoading, setNotesLoading] = useState(false)
   const [baseVisible, setBaseVisible] = useState(true)
   const [notesVisible, setNotesVisible] = useState(true)
   const [paintLayers, setPaintLayers] = useState([])
   const [busy, setBusy] = useState(false)
   const [layerToReplace, setLayerToReplace] = useState(null)
-  const [hydratedSelected, setHydratedSelected] = useState(null)
   const skipNextPersistRef = useRef(false)
-  const [hireRequests, setHireRequests] = useState([])
   const [hireBusyId, setHireBusyId] = useState(null)
 
-  const assistantProfile = useMemo(
-    () => (user?.id ? getAssistantByUserId(user.id) : null),
-    [user?.id],
-  )
-
-  const reloadHireRequests = useCallback(() => {
-    if (!user?.id) {
-      setHireRequests([])
+  useEffect(() => {
+    if (!assignments.length) {
+      setSelectedChapterId(null)
       return
     }
-    setHireRequests(listPendingRequestsForAssistantUser(user.id))
-  }, [user?.id])
-
-  const reloadInbox = useCallback(() => {
-    const list = listAssistantSubmissions()
-    setSubmissions(list)
-    if (!list.some(s => s.id === selectedId)) {
-      setSelectedId(list[0]?.id ?? null)
+    if (!assignments.some(a => a.chapterId === selectedChapterId)) {
+      setSelectedChapterId(assignments[0]?.chapterId ?? null)
+      setPageIndex(0)
     }
-  }, [selectedId])
+  }, [assignments, selectedChapterId])
 
   useEffect(() => {
-    migrateAssistantStorage().finally(() => reloadInbox())
-    const onSync = () => reloadInbox()
-    window.addEventListener('storage', onSync)
-    window.addEventListener('mk-assistant-storage', onSync)
-    return () => {
-      window.removeEventListener('storage', onSync)
-      window.removeEventListener('mk-assistant-storage', onSync)
-    }
-  }, [reloadInbox])
+    migrateAssistantStorage().catch(() => null)
+  }, [])
 
-  useEffect(() => {
-    reloadHireRequests()
-    const onRoster = () => reloadHireRequests()
-    window.addEventListener('storage', onRoster)
-    window.addEventListener('mk-assistant-roster-update', onRoster)
-    return () => {
-      window.removeEventListener('storage', onRoster)
-      window.removeEventListener('mk-assistant-roster-update', onRoster)
-    }
-  }, [reloadHireRequests])
-
-  const selectedSlim = useMemo(
-    () => submissions.find(s => s.id === selectedId) ?? null,
-    [submissions, selectedId],
+  const selectedChapter = useMemo(
+    () => assignments.find(a => a.chapterId === selectedChapterId) ?? null,
+    [assignments, selectedChapterId],
   )
 
-  // Hydrate selected submission (load mangakaImageUrl from IDB if needed)
+  const currentPage = useMemo(() => {
+    const pages = selectedChapter?.pages ?? []
+    if (!pages.length) return null
+    const idx = Math.min(Math.max(pageIndex, 0), pages.length - 1)
+    return pages[idx] ?? null
+  }, [selectedChapter, pageIndex])
+
+  const {
+    allTasks,
+    chapterTasks,
+    pageTasks,
+    stats: taskStats,
+    loading: tasksLoading,
+    refresh: refreshTasks,
+    startTask,
+    submitTask,
+  } = useAssistantTasks({
+    chapterId: selectedChapterId,
+    pageId: currentPage?.id,
+  })
+
+  const chapterActionableTasks = useMemo(
+    () => chapterTasks.filter(t =>
+      ['pending', 'in_progress', 'revision'].includes(t.status),
+    ),
+    [chapterTasks],
+  )
+
+  const chapterAllSubmitted = useMemo(
+    () => chapterTasks.length > 0
+      && chapterTasks.every(t => t.status === 'submitted' || t.status === 'approved'),
+    [chapterTasks],
+  )
+
+  const layerStorageKey = useMemo(() => {
+    if (!selectedChapter || !currentPage) return null
+    return `${selectedChapter.chapterId}-${currentPage.id ?? pageIndex}`
+  }, [selectedChapter, currentPage, pageIndex])
+
   useEffect(() => {
-    if (!selectedSlim) {
-      setHydratedSelected(null)
+    if (!currentPage?.id) {
+      setPageNotes([])
       return undefined
     }
     let cancelled = false
-    hydrateAssistantSubmission(selectedSlim).then(h => {
-      if (!cancelled) setHydratedSelected(h)
-    })
+    setNotesLoading(true)
+    chaptersService.getPageNotes(currentPage.id)
+      .then(notesRes => {
+        if (cancelled) return
+        setPageNotes((Array.isArray(notesRes) ? notesRes : []).map(apiNoteToUi))
+      })
+      .catch(() => {
+        if (!cancelled) setPageNotes([])
+      })
+      .finally(() => {
+        if (!cancelled) setNotesLoading(false)
+      })
     return () => { cancelled = true }
-  }, [selectedSlim])
+  }, [currentPage?.id])
 
-  const selected = hydratedSelected ?? selectedSlim
+  const selected = useMemo(() => {
+    if (!selectedChapter || !currentPage) return null
+    return {
+      id: layerStorageKey,
+      chapterId: selectedChapter.chapterId,
+      seriesTitle: selectedChapter.seriesTitle,
+      chapterNum: selectedChapter.chapterNum,
+      pageIndex,
+      pageLabel: `Trang ${pageIndex + 1}`,
+      pageId: currentPage.id,
+      mangakaImageUrl: currentPage.url,
+      notes: pageNotes,
+      status: selectedChapter.status,
+    }
+  }, [selectedChapter, currentPage, pageIndex, pageNotes, layerStorageKey])
 
-  // Load paint layers from IDB whenever selected changes
   useEffect(() => {
-    if (!selectedSlim) {
+    if (!layerStorageKey) {
       setPaintLayers([])
       return undefined
     }
     let cancelled = false
     setBaseVisible(true)
     setNotesVisible(true)
-    loadAssistantPaintLayers(selectedSlim.id).then(layers => {
+    loadAssistantPaintLayers(layerStorageKey).then(layers => {
       if (cancelled) return
       skipNextPersistRef.current = true
       setPaintLayers(layers)
     })
-    if (selectedSlim.status === 'pending_assistant') {
-      updateAssistantSubmission(selectedSlim.id, { status: 'in_progress' })
-      reloadInbox()
-    }
     return () => { cancelled = true }
-  }, [selectedSlim?.id])
+  }, [layerStorageKey])
 
-  // Persist paint layers (skip if state was just loaded from IDB)
   useEffect(() => {
-    if (!selectedSlim) return
+    if (!layerStorageKey) return
     if (skipNextPersistRef.current) {
       skipNextPersistRef.current = false
       return
     }
-    saveAssistantPaintLayers(selectedSlim.id, paintLayers).catch((err) => {
+    saveAssistantPaintLayers(layerStorageKey, paintLayers).catch((err) => {
       console.error('saveAssistantPaintLayers failed', err)
       toast.error('Không lưu được layer.')
     })
-  }, [paintLayers, selectedSlim?.id])
+  }, [paintLayers, layerStorageKey])
 
   const statsDisplayed = useMemo(() => {
-    const progress = submissions.filter(s => s.status === 'in_progress').length
-    const review = submissions.filter(s => s.status === 'submitted_to_mangaka').length
+    const pending = allTasks.filter(t => t.status === 'pending').length
+    const progress = allTasks.filter(t => t.status === 'in_progress' || t.status === 'revision').length
+    const review = allTasks.filter(t => t.status === 'submitted').length
+    const approved = allTasks.filter(t => t.status === 'approved').length
     return [
-      { ...STATS[0], value: String(submissions.length) },
-      { ...STATS[1], value: String(progress || (selected ? 1 : 0)) },
+      { ...STATS[0], value: String(allTasks.length || assignments.length) },
+      { ...STATS[1], value: String(progress || (selectedChapter ? 1 : 0)) },
       { ...STATS[2], value: String(review) },
-      { ...STATS[3], value: '24' },
-      { ...STATS[4], value: '4.2M' },
+      { ...STATS[3], value: String(approved) },
+      { ...STATS[4], value: formatEarnings(taskStats?.earningsThisMonth) },
     ]
-  }, [submissions, selected])
+  }, [allTasks, assignments.length, selectedChapter, taskStats])
 
   function handleLogout() {
     logout()
     navigate('/login')
   }
 
-  async function handleHireResponse(requestId, accept) {
+  async function handleCooperationAction(req, action) {
     if (!user?.id) return
-    setHireBusyId(requestId)
+    setHireBusyId(req.id)
     try {
-      const result = respondToHireRequest(requestId, accept, user.id)
-      if (accept) {
-        toast.success('Đã chấp nhận — bạn đã thêm vào đội của Mangaka này.')
-      } else {
-        toast.message('Đã từ chối yêu cầu thuê.')
+      if (action === 'accept-meet') {
+        await acceptMeet(req.id)
+        toast.success('Đã đồng ý gặp — chờ chốt hợp tác sau buổi gặp.')
+      } else if (action === 'reject') {
+        await rejectRequest(req.id)
+        toast.message('Đã từ chối yêu cầu hợp tác.')
+      } else if (action === 'accept-cooperation') {
+        await acceptCooperation(req.id)
+        toast.success('Đã chốt hợp tác — bạn có thể nhận chapter từ Mangaka này.')
+      } else if (action === 'decline-cooperation') {
+        await declineCooperation(req.id)
+        toast.message('Đã từ chối hợp tác sau buổi gặp.')
       }
-      reloadHireRequests()
     } catch (err) {
-      toast.error(err?.message ?? 'Không xử lý được yêu cầu.')
+      toast.error(getApiErrorMessage(err, 'Không xử lý được yêu cầu.'))
     } finally {
       setHireBusyId(null)
     }
   }
 
-  function handleSelectSubmission(sub) {
-    setSelectedId(sub.id)
+  function handleSelectChapter(chapter) {
+    setSelectedChapterId(chapter.chapterId)
+    setPageIndex(0)
+  }
+
+  function goPage(delta) {
+    const max = (selectedChapter?.pages?.length ?? 1) - 1
+    setPageIndex(i => Math.min(Math.max(0, i + delta), max))
   }
 
   function toggleLayerVisible(layerId) {
@@ -407,14 +472,14 @@ export default function Assistant() {
   }
 
   async function handleSelectVersion(layerId, versionId) {
-    if (!selectedSlim) return
+    if (!layerStorageKey) return
     const layer = paintLayers.find(l => l.id === layerId)
     const ver = layer?.versions?.find(v => v.id === versionId)
     let dataUrl = ver?.dataUrl ?? null
     if (!dataUrl) {
       try {
         dataUrl = await getBlob(
-          paintLayerVersionBlobKey(selectedSlim.id, layerId, versionId),
+          paintLayerVersionBlobKey(layerStorageKey, layerId, versionId),
         )
       } catch {
         dataUrl = null
@@ -497,66 +562,85 @@ export default function Assistant() {
     toast.success('Đã tải bản phác thảo — chỉnh trong Photoshop / Clip Studio Paint rồi upload từng layer PNG/WebP.')
   }
 
-  async function handleSubmitToMangaka(mode) {
-    if (!selected) return
-    const visibleCount = paintLayers.filter(l => l.visible && l.dataUrl).length
-    if (visibleCount === 0) {
-      toast.error('Hãy bật ít nhất một layer có ảnh trước khi gửi.')
+  async function handleSubmitChapterToMangaka() {
+    if (!selectedChapter) return
+    if (!chapterTasks.length) {
+      toast.error('Chapter chưa có task ghi chú — Mangaka có thể gửi chapter không kèm ghi chú; khi có ghi chú mới nộp được.')
+      return
+    }
+    if (chapterAllSubmitted) {
+      toast.message('Chapter này đã nộp cho Mangaka.')
+      return
+    }
+    const partialSubmitted = chapterTasks.some(t => t.status === 'submitted')
+      && chapterActionableTasks.length > 0
+    if (partialSubmitted) {
+      toast.error('Chapter đang nộp dở — liên hệ Mangaka nếu cần gửi lại.')
+      return
+    }
+    if (!chapterActionableTasks.length) {
+      toast.error('Không còn task cần nộp trên chapter này.')
       return
     }
 
+    const pages = selectedChapter.pages ?? []
+    const pageIds = [...new Set(chapterActionableTasks.map(t => String(t.pageId)))]
+    const submissions = []
+
     setBusy(true)
     try {
-      const compositeDataUrl = mode === 'overlay' ? null : await renderComposite({
-        baseUrl: selected.mangakaImageUrl,
-        notes: selected.notes,
-        paintLayers,
-        notesVisible: false,
-        includeBase: true,
-        transparentBg: false,
-      })
-      const overlayDataUrl = mode === 'composite' ? null : await renderComposite({
-        baseUrl: null,
-        notes: selected.notes,
-        paintLayers,
-        notesVisible: false,
-        includeBase: false,
-        transparentBg: true,
-      })
+      for (const pageId of pageIds) {
+        const page = pages.find(p => String(p.id) === pageId)
+        if (!page?.url) {
+          toast.error('Không tìm thấy ảnh trang — tải lại chapter.')
+          return
+        }
+        const storageKey = `${selectedChapter.chapterId}-${page.id}`
+        const layers = await loadAssistantPaintLayers(storageKey)
+        const hasImage = layers.some(l => l.visible && l.dataUrl)
+        if (!hasImage) {
+          const idx = pages.findIndex(p => String(p.id) === pageId)
+          toast.error(`Trang ${idx + 1} chưa có layer — hoàn thành tất cả trang trước khi gửi chapter.`)
+          return
+        }
+        const compositeDataUrl = await renderComposite({
+          baseUrl: page.url,
+          notes: [],
+          paintLayers: layers,
+          notesVisible: false,
+          includeBase: true,
+          transparentBg: false,
+        })
+        if (!compositeDataUrl) {
+          toast.error(`Không tạo được ảnh trang ${pages.findIndex(p => String(p.id) === pageId) + 1}.`)
+          return
+        }
+        submissions.push({
+          pageId,
+          file: await dataUrlToFile(
+            compositeDataUrl,
+            `${selectedChapter.seriesTitle}-Ch${selectedChapter.chapterNum}-p${pages.findIndex(p => String(p.id) === pageId) + 1}.png`,
+          ),
+          tasks: chapterActionableTasks.filter(t => String(t.pageId) === pageId),
+        })
+      }
 
-      await pushAssistantDeliverable({
-        id: `del-${Date.now()}`,
-        submissionId: selected.id,
-        seriesTitle: selected.seriesTitle,
-        chapterId: selected.chapterId,
-        chapterNum: selected.chapterNum,
-        pageIndex: selected.pageIndex,
-        pageLabel: selected.pageLabel,
-        mangakaImageUrl: selected.mangakaImageUrl,
-        mangakaImageBlobKey: selectedSlim?.mangakaImageBlobKey,
-        compositeDataUrl,
-        overlayDataUrl,
-        layersMeta: sortLayersForStack(paintLayers).map(l => ({
-          id: l.id,
-          name: l.name,
-          stepType: l.stepType,
-          type: l.type,
-          visible: l.visible,
-          opacity: l.opacity ?? 100,
-          sortOrder: l.sortOrder,
-          activeVersionId: l.activeVersionId,
-          versionCount: l.versions?.length ?? 0,
-        })),
-        status: 'pending_mangaka_review',
-        sentAt: new Date().toISOString(),
-        sendMode: mode,
-      })
+      for (const { file, tasks } of submissions) {
+        for (const task of tasks) {
+          if (task.status === 'pending' || task.status === 'revision') {
+            await startTask(task.id)
+          }
+          await submitTask(task.id, file)
+        }
+      }
 
-      const label = mode === 'overlay' ? 'layer trong suốt' : 'bản ghép (ảnh gốc + layer)'
-      toast.success(`Đã gửi ${label} — ${selected.seriesTitle} ${selected.pageLabel}.`)
-      reloadInbox()
-    } catch {
-      toast.error('Không tạo được file gửi đi — thử lại.')
+      toast.success(
+        `Đã nộp chapter ${selectedChapter.chapterNum} — ${submissions.length} trang (${chapterActionableTasks.length} task) cho Mangaka.`,
+      )
+      await refreshTasks()
+      void refreshAssignments()
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Nộp chapter thất bại — thử lại.'))
     } finally {
       setBusy(false)
     }
@@ -573,7 +657,7 @@ export default function Assistant() {
         className="from-violet-950 to-zinc-950"
         label="Assistant Workspace"
         title={`Xin chào${user?.name ? `, ${user.name.split(' ')[0]}` : ''}`}
-        description="Mangaka gửi bản phác thảo PNG/WebP. Assistant tải về, chỉnh trong Photoshop hoặc Clip Studio Paint, rồi upload lại từng layer sản xuất. Website không chỉnh ảnh trực tiếp."
+        description="Mangaka gửi cả chapter (nhiều trang). Bạn chọn chapter, xem từng trang, tải ảnh về chỉnh trong Photoshop/Clip Studio Paint rồi upload layer."
       >
         <div className="mt-5 flex flex-wrap gap-3 text-xs text-zinc-300">
           <Badge variant="secondary" className="bg-white/10 text-white hover:bg-white/15">
@@ -600,19 +684,25 @@ export default function Assistant() {
           onChange={onFileInputChange}
         />
 
-        {assistantProfile && hireRequests.length > 0 ? (
+        {cooperationLoading ? (
+          <Card className="mb-6">
+            <CardContent className="py-6 text-center text-sm text-muted-foreground">
+              Đang tải yêu cầu hợp tác...
+            </CardContent>
+          </Card>
+        ) : cooperationRequests.length > 0 ? (
           <Card className="mb-6 overflow-hidden border-violet-200 bg-gradient-to-br from-violet-500/5 via-background to-background dark:border-violet-500/30">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
                 <Handshake className="size-4 text-violet-600" />
-                Yêu cầu thuê từ Mangaka
+                Yêu cầu hợp tác từ Mangaka
               </CardTitle>
               <CardDescription>
-                Assistant có thể chấp nhận nhiều Mangaka — mỗi lời mời thêm bạn vào đội của họ.
+                Luồng 2 bước: đồng ý gặp → chốt hợp tác. Sau khi chốt, Mangaka mới gán chapter cho bạn.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {hireRequests.map(req => (
+              {cooperationRequests.map(req => (
                 <div
                   key={req.id}
                   className="flex flex-col gap-3 rounded-xl border bg-card p-4 sm:flex-row sm:items-center sm:justify-between"
@@ -622,31 +712,72 @@ export default function Assistant() {
                     {req.note ? (
                       <p className="text-sm text-muted-foreground">&ldquo;{req.note}&rdquo;</p>
                     ) : (
-                      <p className="text-sm text-muted-foreground">Mời bạn làm Assistant cho dự án của họ.</p>
+                      <p className="text-sm text-muted-foreground">Mời bạn hợp tác làm Assistant.</p>
                     )}
                     <p className="text-[11px] text-muted-foreground">
-                      Gửi lúc {new Date(req.createdAt).toLocaleString('vi-VN')}
+                      {requestStatusLabel(req.status)} · Gửi lúc {new Date(req.createdAt).toLocaleString('vi-VN')}
                     </p>
                   </div>
                   <div className="flex shrink-0 gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={hireBusyId === req.id}
-                      onClick={() => void handleHireResponse(req.id, false)}
-                    >
-                      Từ chối
-                    </Button>
-                    <Button
-                      size="sm"
-                      disabled={hireBusyId === req.id}
-                      onClick={() => void handleHireResponse(req.id, true)}
-                    >
-                      <CheckCircle2 className="size-3.5" />
-                      Chấp nhận
-                    </Button>
+                    {isPendingRequest(req.status) ? (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={hireBusyId === req.id}
+                          onClick={() => void handleCooperationAction(req, 'reject')}
+                        >
+                          Từ chối
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={hireBusyId === req.id}
+                          onClick={() => void handleCooperationAction(req, 'accept-meet')}
+                        >
+                          <CheckCircle2 className="size-3.5" />
+                          Đồng ý gặp
+                        </Button>
+                      </>
+                    ) : isMeetingPhase(req.status) ? (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={hireBusyId === req.id}
+                          onClick={() => void handleCooperationAction(req, 'decline-cooperation')}
+                        >
+                          Từ chối hợp tác
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={hireBusyId === req.id}
+                          onClick={() => void handleCooperationAction(req, 'accept-cooperation')}
+                        >
+                          <CheckCircle2 className="size-3.5" />
+                          Chốt hợp tác
+                        </Button>
+                      </>
+                    ) : null}
                   </div>
                 </div>
+              ))}
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {cooperations.length > 0 ? (
+          <Card className="mb-6">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Mangaka đang hợp tác</CardTitle>
+              <CardDescription>
+                Đã chốt hợp tác — có thể nhận chapter từ các Mangaka này.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-2">
+              {cooperations.map(c => (
+                <Badge key={c.id} variant="secondary" className="px-3 py-1.5">
+                  {c.mangakaName}
+                </Badge>
               ))}
             </CardContent>
           </Card>
@@ -674,43 +805,46 @@ export default function Assistant() {
         <div className="grid gap-6 xl:grid-cols-[300px_1fr_360px]">
           <Card className="flex flex-col gap-0 overflow-hidden p-0">
             <CardHeader className="border-b p-4">
-              <CardTitle className="text-base">Trang từ Mangaka</CardTitle>
-              <CardDescription>Chọn trang để mở chế độ layer</CardDescription>
+              <CardTitle className="text-base">Chapter được giao</CardTitle>
+              <CardDescription>1 chapter = 1 Assistant · bấm vào để xem các trang</CardDescription>
             </CardHeader>
-            {submissions.length === 0 ? (
+            {assignmentsLoading ? (
+              <div className="p-6 text-center text-xs text-muted-foreground">Đang tải việc được giao...</div>
+            ) : assignments.length === 0 ? (
               <div className="p-6 text-center text-xs text-muted-foreground">
-                Chưa có trang nào. Mangaka bấm <strong>Gửi Assistant</strong> ở tab Upload &amp; Ghi chú.
+                Chưa có chapter nào. Mangaka gửi cả chapter ở tab Upload &amp; Ghi chú.
               </div>
             ) : (
               <ScrollArea className="max-h-[calc(100vh-220px)]">
                 <ul className="divide-y">
-                  {submissions.map(sub => {
-                    const badge = STATUS_BADGE[sub.status] ?? STATUS_BADGE.pending_assistant
-                    const layerCount = Array.isArray(sub.paintLayers) ? sub.paintLayers.length : 0
+                  {assignments.map(ch => {
+                    const badge = STATUS_BADGE[ch.status] ?? STATUS_BADGE.pending_assistant
+                    const cover = ch.pages?.find(p => p.url) ?? ch.pages?.[0]
+                    const pageCount = ch.pageCount ?? ch.pages?.length ?? 0
                     return (
-                      <li key={sub.id}>
+                      <li key={ch.chapterId}>
                         <button
                           type="button"
-                          onClick={() => handleSelectSubmission(sub)}
+                          onClick={() => handleSelectChapter(ch)}
                           className={cn(
                             'flex w-full items-start gap-3 p-3 text-left transition-colors',
-                            selectedId === sub.id ? 'bg-primary/10' : 'hover:bg-muted/50',
+                            selectedChapterId === ch.chapterId ? 'bg-primary/10' : 'hover:bg-muted/50',
                           )}
                         >
                           <span className="manga-page manga-page--thumb-md shrink-0 overflow-hidden rounded">
-                            {sub.mangakaImageUrl ? (
-                              <img src={sub.mangakaImageUrl} alt="" className="manga-page__media" />
+                            {cover?.url ? (
+                              <img src={cover.url} alt="" className="manga-page__media" />
                             ) : (
                               <span className="flex h-full items-center justify-center text-xs text-muted-foreground">📄</span>
                             )}
                           </span>
                           <div className="min-w-0 flex-1 space-y-0.5">
-                            <p className="truncate text-sm font-semibold">{sub.seriesTitle}</p>
+                            <p className="truncate text-sm font-semibold">{ch.seriesTitle}</p>
                             <p className="text-xs text-muted-foreground">
-                              Ch. {sub.chapterNum} · {sub.pageLabel}
+                              Chapter {ch.chapterNum}{ch.title ? ` · ${ch.title}` : ''}
                             </p>
                             <p className="text-xs text-muted-foreground">
-                              {sub.notes?.length ?? 0} vùng · {layerCount || 6} bước layer
+                              {pageCount} trang
                             </p>
                             <Badge className={cn('mt-1', badge.className)} variant="secondary">
                               {badge.label}
@@ -734,9 +868,23 @@ export default function Assistant() {
                       <p className="truncate text-sm font-semibold">
                         {selected.seriesTitle} · Ch. {selected.chapterNum}
                       </p>
-                      <p className="text-xs text-muted-foreground">{selected.pageLabel}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {selected.pageLabel} · {(selectedChapter?.pages?.length ?? 0)} trang trong chapter
+                      </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5">
+                      <Button size="icon-sm" variant="outline" disabled={pageIndex === 0} onClick={() => goPage(-1)}>‹</Button>
+                      <span className="text-xs tabular-nums text-muted-foreground">
+                        {pageIndex + 1} / {selectedChapter?.pages?.length ?? 1}
+                      </span>
+                      <Button
+                        size="icon-sm"
+                        variant="outline"
+                        disabled={pageIndex >= (selectedChapter?.pages?.length ?? 1) - 1}
+                        onClick={() => goPage(1)}
+                      >
+                        ›
+                      </Button>
                       <Button size="sm" variant={baseVisible ? 'default' : 'outline'} onClick={() => setBaseVisible(v => !v)}>
                         {baseVisible ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
                         Ảnh gốc
@@ -809,7 +957,7 @@ export default function Assistant() {
               <Card>
                 <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
                   <ImageIcon className="size-12 text-muted-foreground/40" />
-                  <p className="text-sm text-muted-foreground">Chọn một trang ở danh sách bên trái để bắt đầu.</p>
+                  <p className="text-sm text-muted-foreground">Chọn một chapter ở danh sách bên trái để xem trang và làm việc.</p>
                 </CardContent>
               </Card>
             )}
@@ -834,6 +982,30 @@ export default function Assistant() {
                 </p>
               </CardContent>
             </Card>
+
+            {selected && pageTasks.length > 0 ? (
+              <Card className="border-sky-200 dark:border-sky-500/20">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Task trên trang này</CardTitle>
+                  <CardDescription className="text-xs">
+                    {tasksLoading ? 'Đang tải...' : `${pageTasks.length} task từ Mangaka`}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {pageTasks.map(task => (
+                    <div key={task.id} className="rounded-md border p-2.5 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <Badge variant="outline">{noteTaskLabel(task.workType === 'effects' ? 'fx' : task.workType)}</Badge>
+                        <span className="text-muted-foreground">{TASK_STATUS_LABEL[task.status] ?? task.status}</span>
+                      </div>
+                      {task.description ? (
+                        <p className="mt-1 line-clamp-2 text-muted-foreground">{task.description}</p>
+                      ) : null}
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            ) : null}
 
             <Card>
               <CardHeader className="pb-3">
@@ -939,7 +1111,10 @@ export default function Assistant() {
 
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">Hành động</CardTitle>
+                <CardTitle className="text-base">Nộp chapter cho Mangaka</CardTitle>
+                <CardDescription className="text-xs">
+                  Hoàn thành layer trên <strong>mọi trang có task</strong>, rồi gửi một lần — chỉ ảnh, không kèm ghi chú.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-2">
                 <Button
@@ -949,28 +1124,36 @@ export default function Assistant() {
                   onClick={handleDownloadOriginal}
                 >
                   <ArrowDownToLine className="size-4" />
-                  Tải ảnh gốc về máy
+                  Tải ảnh gốc trang hiện tại
                 </Button>
+                {selectedChapter && chapterTasks.length > 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    {chapterActionableTasks.length} task còn lại ·{' '}
+                    {[...new Set(chapterActionableTasks.map(t => String(t.pageId)))].length} trang cần ảnh
+                    {chapterAllSubmitted ? ' · đã nộp' : ''}
+                  </p>
+                ) : null}
                 <Button
                   className="w-full"
-                  disabled={!selected || busy || visibleLayerCount === 0}
-                  onClick={() => handleSubmitToMangaka('overlay')}
-                  variant="outline"
-                >
-                  <LayersIcon className="size-4" />
-                  Gửi layer trong suốt
-                </Button>
-                <Button
-                  className="w-full"
-                  disabled={!selected || busy || visibleLayerCount === 0}
-                  onClick={() => handleSubmitToMangaka('composite')}
+                  disabled={
+                    !selectedChapter
+                    || busy
+                    || !chapterActionableTasks.length
+                    || chapterAllSubmitted
+                  }
+                  onClick={() => void handleSubmitChapterToMangaka()}
                 >
                   <Send className="size-4" />
-                  Gửi bản ghép
+                  Gửi cả chapter cho Mangaka
                 </Button>
-                {visibleLayerCount === 0 && selected ? (
-                  <p className="text-[10px] text-amber-600">
-                    Bật ít nhất 1 layer (có ảnh) trước khi gửi.
+                {selectedChapter && !chapterTasks.length ? (
+                  <p className="text-[10px] text-muted-foreground">
+                    Chapter chưa có ghi chú (task) — vẫn xem và làm trang; Mangaka có thể thêm ghi chú sau.
+                  </p>
+                ) : null}
+                {selectedChapter && chapterActionableTasks.length > 0 ? (
+                  <p className="text-[10px] text-muted-foreground">
+                    Mỗi trang: bật ít nhất 1 layer có ảnh (bản ghép ảnh gốc + layer).
                   </p>
                 ) : null}
               </CardContent>
@@ -991,7 +1174,7 @@ export default function Assistant() {
                     { step: 3, text: 'Chỉnh trong Photoshop / Clip Studio Paint (không vẽ trên web)' },
                     { step: 4, text: 'Upload lại từng bước: Sketch, Line Art, Color, Text, Effect, Final' },
                     { step: 5, text: 'Preview, bật/tắt, sắp xếp thứ tự, quản lý version' },
-                    { step: 6, text: 'Gửi Mangaka duyệt (layer trong suốt hoặc bản ghép)' },
+                    { step: 6, text: 'Hoàn thành mọi trang → Gửi cả chapter (ảnh) cho Mangaka' },
                   ].map(it => (
                     <li key={it.step} className="relative">
                       <span className="absolute -left-[26px] flex size-5 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground ring-2 ring-card">
@@ -1012,15 +1195,30 @@ export default function Assistant() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                {INCOME_MONTHS.map(m => (
-                  <div key={m.month} className="flex items-center justify-between rounded-md border p-2.5">
-                    <div>
-                      <p className="text-sm font-medium">{m.month}</p>
-                      <p className="text-xs text-muted-foreground">{m.pages} trang duyệt</p>
-                    </div>
-                    <span className="font-bold tabular-nums text-emerald-600">{m.amount}</span>
+                <div className="rounded-md border p-2.5 text-sm">
+                  <p className="text-xs text-muted-foreground">Kỳ thống kê</p>
+                  <p className="font-medium">{taskStats?.period ?? 'Tháng này'}</p>
+                </div>
+                <div className="flex items-center justify-between rounded-md border p-2.5">
+                  <div>
+                    <p className="text-sm font-medium">Task đã duyệt</p>
+                    <p className="text-xs text-muted-foreground">Trong tháng</p>
                   </div>
-                ))}
+                  <span className="font-bold tabular-nums text-emerald-600">
+                    {taskStats?.approvedTasksThisMonth ?? '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between rounded-md border p-2.5">
+                  <div>
+                    <p className="text-sm font-medium">Thu nhập tháng</p>
+                    <p className="text-xs text-muted-foreground">
+                      Tổng: {formatEarnings(taskStats?.totalEarnings)}
+                    </p>
+                  </div>
+                  <span className="font-bold tabular-nums text-emerald-600">
+                    {formatEarnings(taskStats?.earningsThisMonth)}
+                  </span>
+                </div>
               </CardContent>
             </Card>
           </aside>

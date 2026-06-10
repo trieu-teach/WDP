@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight,
@@ -23,6 +24,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { getSession, getRolePath } from '@/lib/auth.js'
 import { PATH_EDITOR_BOARD, PATH_TANTOU_EDITOR } from '@/constants/roleTerminology.js'
 import { cn } from '@/lib/utils'
+import { seriesService } from '@/api/series.service.js'
+import { apiRankingToUi } from '@/utils/apiMappers.js'
 
 const NAV_LINKS = [
   { href: '#featured', label: 'Truyện nổi bật' },
@@ -99,9 +102,49 @@ const STATS = [
 
 const GENRES = ['Hành động', 'Huyền huyễn', 'Tình cảm', 'Sci-fi', 'Phiêu lưu', 'Kinh dị', 'Isekai', 'Hài hước', 'Học đường']
 
+function rankingToFeaturedCard(item, index) {
+  const r = apiRankingToUi(item, index)
+  const title = r.title || `Series ${index + 1}`
+  const fallback = FEATURED[index % FEATURED.length]
+  const reads = r.reads >= 1000 ? `${(r.reads / 1000).toFixed(1)}K` : String(r.reads || '—')
+  return {
+    initials: title.slice(0, 2).toUpperCase(),
+    gradient: fallback?.gradient ?? 'from-violet-400 to-purple-800',
+    title,
+    genre: fallback?.genre ?? 'Manga',
+    chapters: fallback?.chapters ?? 0,
+    reads,
+    rank: r.rank ?? index + 1,
+    hot: index === 0,
+  }
+}
+
 export default function Home() {
   const user = getSession()
   const workspacePath = user ? getRolePath(user.role) : null
+  const [featuredList, setFeaturedList] = useState(FEATURED)
+
+  useEffect(() => {
+    seriesService.getRanking({ limit: 8 })
+      .then(data => {
+        const list = Array.isArray(data) ? data : []
+        if (!list.length) return
+        setFeaturedList(list.map(rankingToFeaturedCard))
+      })
+      .catch(() => {
+        seriesService.getAll({ limit: 8, sort: 'createdAt', order: 'desc' })
+          .then(data => {
+            const list = Array.isArray(data) ? data : (data?.data ?? [])
+            if (!list.length) return
+            setFeaturedList(list.map((item, i) => rankingToFeaturedCard({
+              series_name: item.name ?? item.title,
+              rank: i + 1,
+              reads: item.marks ?? item.view_count ?? 0,
+            }, i)))
+          })
+          .catch(() => {})
+      })
+  }, [])
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -297,7 +340,7 @@ export default function Home() {
         </div>
 
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-          {FEATURED.map(m => (
+          {featuredList.map(m => (
             <Card
               key={m.title}
               className="group cursor-pointer gap-0 overflow-hidden border-0 bg-card p-0 shadow-md transition-all duration-300 hover:-translate-y-2 hover:shadow-2xl hover:shadow-primary/10"

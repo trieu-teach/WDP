@@ -14,7 +14,6 @@ import {
   ListChecks,
   PenSquare,
   Plus,
-  Send,
   Sparkles,
   Trash2,
   TrendingUp,
@@ -27,6 +26,16 @@ import Footer from "@/components/User/Footer/Footer.jsx";
 import { WorkspaceHero } from "@/components/layout/WorkspaceHero.jsx";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Card,
   CardContent,
@@ -53,35 +62,20 @@ import {
   removeEbDebutApproval,
   syncEbDebutPendingFromSeries,
 } from "@/utils/ebDebutStorage.js";
-import {
-  loadMangakaWorkspaceState,
-  persistMangakaWorkspaceState,
-  persistMangakaWorkspaceStateNow,
-} from "@/utils/mangakaWorkspaceStorage.js";
-import {
-  readMangakaWorkspace,
-  resolveAnnotatorChapter,
-} from "@/utils/mangakaWorkspaceReader.js";
-import {
-  buildSubmissionFromMangakaPage,
-  getAssistantSubmission,
-  getPendingDeliverableForMangaka,
-  pushAssistantSubmission,
-  hydrateAssistantDeliverable,
-  migrateAssistantStorage,
-  updateDeliverableStatus,
-} from "@/utils/assistantWorkspaceStorage.js";
+import { resolveAnnotatorChapter } from "@/utils/mangakaWorkspaceReader.js";
+import { useMangakaWorkspace } from "@/hooks/useMangakaWorkspace.js";
+import { getApiErrorMessage } from "@/api/http.js";
+import { tasksService } from "@/api/tasks.service.js";
+import { chaptersService } from "@/api/chapters.service.js";
+import { submissionsService } from "@/api/submissions.service.js";
+import { uiNoteToTaskCreate, apiTaskToUi } from "@/utils/apiMappers.js";
+import { useMangakaTasks } from "@/hooks/useMangakaTasks.js";
 import {
   listTantouSubmissions,
-  pushTantouSubmissionFromMangaka,
 } from "@/utils/tantouWorkspaceStorage.js";
-import { getActiveAssigneesForMangaka } from "@/utils/assistantRosterStorage.js";
+import { useMangakaCooperation } from "@/hooks/useMangakaCooperation.js";
 import {
-  applySeriesFormUpdate,
-  buildSeriesFromForm,
-  buildSeriesFromUploadTitle,
   formatSeriesCardLine,
-  normalizeSeriesList,
   seriesToExternalSummary,
   slugifySeriesTitle,
 } from "@/utils/seriesModel.js";
@@ -124,149 +118,6 @@ const STATUS_BADGE = {
       "bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-500/15 dark:text-emerald-400",
   },
 };
-
-const INITIAL_SERIES = normalizeSeriesList([
-  {
-    id: 1,
-    title: "One Thorn",
-    altTitle: "One Thorn",
-    synopsis:
-      "Hành trình của nhóm thám hiểm trong thế giới hậu tận thế, tìm manh mối về cây gai đen huyền thoại.",
-    genres: ["Phiêu lưu", "Huyền ảo"],
-    demographic: "shonen",
-    format: "manga",
-    language: "vi",
-    contentRating: "teen",
-    publicationStatus: "ongoing",
-    publishType: "continuing",
-    chapters: 5,
-    marks: 2,
-    status: "assistant",
-    updated: "2 giờ trước",
-    color: "#e63946",
-    progress: 72,
-    authorName: "Demo Mangaka",
-  },
-  {
-    id: 2,
-    title: "Ma Đạo",
-    synopsis:
-      "Tu tiên giả trẻ dấn thân vào ma đạo để cứu làng quê — ranh giới thiện ác bị xóa nhòa.",
-    genres: ["Võ thuật", "Drama"],
-    demographic: "seinen",
-    format: "manhua",
-    language: "vi",
-    contentRating: "mature",
-    publicationStatus: "ongoing",
-    publishType: "continuing",
-    chapters: 3,
-    marks: 4,
-    status: "draft",
-    updated: "1 ngày trước",
-    color: "#9b5de5",
-    progress: 35,
-  },
-  {
-    id: 3,
-    title: "Vô Lượng",
-    synopsis:
-      "Đạo sĩ mù và đệ tử lang thang giải oan nghiệt — từng arc một bí ẩn lớn hơn.",
-    genres: ["Kinh dị", "Đời thường"],
-    demographic: "seinen",
-    format: "manga",
-    language: "vi",
-    publicationStatus: "ongoing",
-    publishType: "continuing",
-    chapters: 2,
-    marks: 0,
-    status: "review",
-    updated: "3 giờ trước",
-    color: "#f4a261",
-    progress: 90,
-  },
-]);
-
-const INITIAL_CHAPTERS = [
-  {
-    id: 1,
-    series: "One Thorn",
-    num: 12,
-    type: "PNG",
-    pages: 24,
-    status: "assistant",
-    date: "14/05/2026",
-  },
-  {
-    id: 2,
-    series: "One Thorn",
-    num: 11,
-    type: "PNG",
-    pages: 18,
-    status: "done",
-    date: "10/05/2026",
-  },
-  {
-    id: 3,
-    series: "Ma Đạo",
-    num: 3,
-    type: "JPG",
-    pages: 15,
-    status: "draft",
-    date: "12/05/2026",
-  },
-];
-
-const DEMO_ANNOTATOR_PAGES = [
-  { id: "demo-1", name: "Trang 1 (mẫu)", url: null },
-  { id: "demo-2", name: "Trang 2 (mẫu)", url: null },
-];
-
-const INITIAL_ANNOTATOR_CHAPTERS = [
-  {
-    id: "ch-demo",
-    series: "One Thorn",
-    num: "12",
-    pages: DEMO_ANNOTATOR_PAGES,
-    createdAt: "14/05/2026",
-  },
-];
-
-const INITIAL_ANNOTATOR_NOTES = {
-  "ch-demo-0": [
-    {
-      id: "n1",
-      x: 12,
-      y: 18,
-      w: 28,
-      h: 22,
-      text: "Vẽ nền trời, hoàng hôn",
-      taskType: "background",
-      assignee: "Assistant A",
-    },
-    {
-      id: "n2",
-      x: 55,
-      y: 45,
-      w: 35,
-      h: 30,
-      text: "Thêm cây cối hai bên đường",
-      taskType: "fx",
-      assignee: "Assistant B",
-    },
-  ],
-};
-
-const DEMO_SERIES_RANKINGS = [
-  {
-    title: "One Thorn",
-    rank: 4,
-    delta: "↑2",
-    reads: "12.4K",
-    atRisk: true,
-    riskReason: "Lượt đọc giảm 18% trong 2 tuần",
-  },
-  { title: "Ma Đạo", rank: 11, delta: "↓1", reads: "3.1K", atRisk: false },
-];
 
 const PIPELINE_DEBUT_STEPS = [
   { step: 1, title: "Mangaka → Assistant", desc: "Gửi bản thảo & ô ghi chú" },
@@ -317,30 +168,6 @@ const TAB_ITEMS = [
   { id: "assistants", label: "Thuê Assistant", icon: UserPlus },
   { id: "annotate", label: "Upload & Ghi chú", icon: PenSquare },
 ];
-
-function createMangakaWorkspaceDefaults() {
-  return {
-    tab: "series",
-    annotateSeries: "One Thorn",
-    seriesList: INITIAL_SERIES,
-    chapterRows: INITIAL_CHAPTERS.map((c) => ({ ...c })),
-    annotatorChapters: INITIAL_ANNOTATOR_CHAPTERS.map((c) => ({
-      ...c,
-      pages: c.pages.map((p) => ({ ...p })),
-    })),
-    annotatorNotes: JSON.parse(JSON.stringify(INITIAL_ANNOTATOR_NOTES)),
-    annotatorActiveChapterId: "ch-demo",
-    annotatorPageIndex: 0,
-    annotatorChapterNum: "12",
-    annotatorPagesPerChapter: "",
-    annotatorUploadPageBudget: "",
-  };
-}
-
-function resolveAnnotatorActiveChapterId(chapters, preferredId) {
-  if (chapters.some((c) => c.id === preferredId)) return preferredId;
-  return chapters[0]?.id ?? "ch-demo";
-}
 
 const STAT_ICON_BG = {
   rose: "bg-rose-500/10 text-rose-600",
@@ -547,57 +374,60 @@ export default function Mangaka() {
   const navigate = useNavigate();
   const location = useLocation();
   const user = getSession();
-  const mangakaId = user?.id ?? "demo-mangaka";
-  const mangakaName = user?.name ?? "Demo Mangaka";
-  const wsDefaults = useMemo(() => createMangakaWorkspaceDefaults(), []);
-  const hydrated = useMemo(
-    () => loadMangakaWorkspaceState(wsDefaults),
-    [wsDefaults],
-  );
+  const mangakaId = user?.id ?? null;
+  const mangakaName = user?.name ?? "Mangaka";
 
-  const [tab, setTab] = useState(() => hydrated.tab);
-  const [annotateSeries, setAnnotateSeries] = useState(
-    () => hydrated.annotateSeries,
-  );
-  const [seriesList, setSeriesList] = useState(() => hydrated.seriesList);
+  const {
+    seriesList,
+    setSeriesList,
+    chapterRows,
+    setChapterRows,
+    annotatorChapters,
+    setAnnotatorChapters,
+    annotatorNotes,
+    setAnnotatorNotes,
+    rankings,
+    loading: workspaceLoading,
+    createSeries,
+    updateSeries,
+    removeSeries,
+    createChapter,
+    uploadChapterPages,
+    assignChapter,
+    unassignChapter,
+    updateChapterStatus,
+    loadPageNotes,
+    loadChapterPages,
+    savePageNote,
+    deletePageNote,
+    refresh: refreshWorkspace,
+  } = useMangakaWorkspace(user);
+
+  const {
+    pendingReviews,
+    loading: tasksLoading,
+    refresh: refreshMangakaTasks,
+    approveChapterTasks,
+    requestRevision,
+  } = useMangakaTasks(chapterRows);
+
+  const { assignees: hiredAssistants } = useMangakaCooperation();
+
+  const [tab, setTab] = useState("series");
+  const [annotateSeries, setAnnotateSeries] = useState("");
   const [addSeriesOpen, setAddSeriesOpen] = useState(false);
   const [editingSeries, setEditingSeries] = useState(null);
-  const [chapterRows, setChapterRows] = useState(() => hydrated.chapterRows);
   const [uploadPctBySeries, setUploadPctBySeries] = useState({});
-  const [annotatorChapters, setAnnotatorChapters] = useState(
-    () => hydrated.annotatorChapters,
-  );
-  const [annotatorNotes, setAnnotatorNotes] = useState(
-    () => hydrated.annotatorNotes,
-  );
-  const [annotatorActiveChapterId, setAnnotatorActiveChapterId] = useState(() =>
-    resolveAnnotatorActiveChapterId(
-      hydrated.annotatorChapters,
-      hydrated.annotatorActiveChapterId,
-    ),
-  );
-  const [annotatorPageIndex, setAnnotatorPageIndex] = useState(
-    () => hydrated.annotatorPageIndex,
-  );
-  const [annotatorChapterNum, setAnnotatorChapterNum] = useState(
-    () => hydrated.annotatorChapterNum,
-  );
-  const [annotatorPagesPerChapter, setAnnotatorPagesPerChapter] = useState(
-    () => hydrated.annotatorPagesPerChapter,
-  );
-  const [annotatorUploadPageBudget, setAnnotatorUploadPageBudget] = useState(
-    () => hydrated.annotatorUploadPageBudget,
-  );
+  const [annotatorActiveChapterId, setAnnotatorActiveChapterId] = useState(null);
+  const [annotatorPageIndex, setAnnotatorPageIndex] = useState(0);
+  const [annotatorChapterNum, setAnnotatorChapterNum] = useState("1");
+  const [annotatorPagesPerChapter, setAnnotatorPagesPerChapter] = useState("");
+  const [annotatorUploadPageBudget, setAnnotatorUploadPageBudget] = useState("");
   const [ebApprovedTick, setEbApprovedTick] = useState(0);
-  const [deliverableTick, setDeliverableTick] = useState(0);
   const [tantouTick, setTantouTick] = useState(0);
-  const [tantouSendReady, setTantouSendReady] = useState(null);
-  const [rosterTick, setRosterTick] = useState(0);
-
-  const hiredAssistants = useMemo(() => {
-    void rosterTick;
-    return getActiveAssigneesForMangaka(mangakaId);
-  }, [mangakaId, rosterTick]);
+  const [revisionOpen, setRevisionOpen] = useState(false);
+  const [revisionNote, setRevisionNote] = useState("");
+  const [revisionBusy, setRevisionBusy] = useState(false);
 
   const statValues = useMemo(() => {
     const pendingAssistant = chapterRows.filter(
@@ -665,50 +495,23 @@ export default function Mangaka() {
     [seriesList, annotateSeries],
   );
 
-  const pendingDeliverableSlim = useMemo(
-    () => getPendingDeliverableForMangaka(),
-    [deliverableTick, chapterRows],
-  );
-  const [pendingDeliverable, setPendingDeliverable] = useState(null);
-  useEffect(() => {
-    if (!pendingDeliverableSlim) {
-      setPendingDeliverable(null);
-      return undefined;
+  const pendingReview = pendingReviews[0] ?? null;
+  const pendingCompositeReview = pendingReview?.chapter ?? null;
+  const pendingSubmittedTasks = pendingReview?.tasks ?? [];
+  const pendingPageResults = useMemo(() => {
+    const map = new Map();
+    for (const task of pendingSubmittedTasks) {
+      if (task.pageId && task.resultImageUrl) {
+        map.set(String(task.pageId), task.resultImageUrl);
+      }
     }
-    let cancelled = false;
-    hydrateAssistantDeliverable(pendingDeliverableSlim).then((h) => {
-      if (!cancelled) setPendingDeliverable(h);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [pendingDeliverableSlim]);
-
-  const pendingCompositeReview = useMemo(() => {
-    const head = pendingDeliverable ?? pendingDeliverableSlim;
-    if (head) {
-      return (
-        chapterRows.find(
-          (r) =>
-            r.series === head.seriesTitle &&
-            String(r.num) === String(head.chapterNum),
-        ) ?? {
-          id: head.chapterId,
-          series: head.seriesTitle,
-          num: head.chapterNum,
-          status: "assistant",
-        }
-      );
-    }
-    return chapterRows.find(
-      (r) => r.status === "assistant" || r.status === "review",
-    );
-  }, [chapterRows, pendingDeliverable, pendingDeliverableSlim]);
+    return [...map.values()];
+  }, [pendingSubmittedTasks]);
 
   const seriesRankings = useMemo(() => {
     const titles = new Set(seriesList.map((s) => s.title));
-    return DEMO_SERIES_RANKINGS.filter((r) => titles.has(r.title));
-  }, [seriesList]);
+    return rankings.filter((r) => titles.has(r.title) || titles.size === 0);
+  }, [seriesList, rankings]);
 
   const atRiskSeries = useMemo(
     () => seriesRankings.filter((r) => r.atRisk),
@@ -720,38 +523,141 @@ export default function Mangaka() {
     [ebApprovedTick, seriesList],
   );
 
-  function handleSendToAssistant({
-    chapter,
-    pageIndex,
-    pageUrl,
-    pageName,
-    notes,
-  }) {
-    if (!notes?.length) return;
-    const submission = buildSubmissionFromMangakaPage({
-      seriesTitle: chapter.series,
-      chapterId: chapter.id,
-      chapterNum: chapter.num,
-      pageIndex,
-      pageName,
-      mangakaImageUrl: pageUrl,
-      notes,
-      mangakaName: user?.name ?? "Mangaka",
-    });
-    void pushAssistantSubmission(submission);
-    setChapterRows((prev) =>
-      prev.map((r) =>
-        r.series === chapter.series && String(r.num) === String(chapter.num)
-          ? { ...r, status: "assistant", statusLabel: "Chờ Assistant" }
-          : r,
-      ),
-    );
-    toast.success(
-      `Đã gửi ${submission.pageLabel} (${notes.length} ô ghi chú) cho Assistant.`,
+  const workspaceApi = useMemo(
+    () => ({
+      createChapter,
+      uploadChapterPages,
+      loadChapterPages,
+      loadPageNotes,
+      savePageNote,
+      deletePageNote,
+    }),
+    [
+      createChapter,
+      uploadChapterPages,
+      loadChapterPages,
+      loadPageNotes,
+      savePageNote,
+      deletePageNote,
+    ],
+  );
+
+  function noteMatchesTaskRegion(note, task) {
+    const r = task.region ?? {};
+    const w = r.width ?? r.w ?? 0;
+    const h = r.height ?? r.h ?? 0;
+    return (
+      Math.abs(Number(r.x ?? 0) - Number(note.x ?? 0)) < 1
+      && Math.abs(Number(r.y ?? 0) - Number(note.y ?? 0)) < 1
+      && Math.abs(Number(w) - Number(note.w ?? 0)) < 1
+      && Math.abs(Number(h) - Number(note.h ?? 0)) < 1
     );
   }
 
-  function sendChapterToTantou({
+  async function handleSendToAssistant({
+    chapter,
+    pages,
+    assistantId,
+  }) {
+    if (!chapter?.id) return;
+    if (!pages?.length) {
+      toast.error("Chapter chưa có trang nào — upload ảnh trước.");
+      return;
+    }
+    if (!assistantId) {
+      toast.error("Chọn Assistant trước khi gửi chapter.");
+      return;
+    }
+
+    const targetAssistantId = String(assistantId);
+    const chapterRow = chapterRows.find((r) => r.id === chapter.id);
+    const currentAssistantId = chapterRow?.assistantId
+      ? String(chapterRow.assistantId)
+      : null;
+
+    try {
+      const notesToCreate = [];
+      for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+        const page = pages[pageIndex];
+        if (!page?.id) continue;
+        const pageKey = `${chapter.id}-${pageIndex}`;
+        const pageNotes = annotatorNotes[pageKey]?.length
+          ? annotatorNotes[pageKey]
+          : await loadPageNotes(page.id, pageKey);
+        for (const note of pageNotes) {
+          notesToCreate.push({ page, note });
+        }
+      }
+
+      if (
+        currentAssistantId
+        && currentAssistantId !== targetAssistantId
+      ) {
+        await unassignChapter(chapter.id);
+      }
+
+      if (!currentAssistantId || currentAssistantId !== targetAssistantId) {
+        try {
+          await assignChapter(chapter.id, targetAssistantId);
+        } catch (err) {
+          const status = err?.response?.status;
+          const message = String(err?.response?.data?.message ?? "");
+          const alreadyAssigned = status === 400
+            && /assistant|đã có/i.test(message);
+          if (alreadyAssigned) {
+            await chaptersService.unassignAssistant(chapter.id).catch(() => null);
+            await assignChapter(chapter.id, targetAssistantId);
+          } else if (status !== 409) {
+            throw err;
+          }
+        }
+      }
+
+      const existingRaw = await tasksService.getByChapter(chapter.id).catch(() => []);
+      const existingTasks = (Array.isArray(existingRaw) ? existingRaw : []).map(apiTaskToUi);
+      let newTaskCount = 0;
+
+      for (const { page, note } of notesToCreate) {
+        const duplicate = existingTasks.some(
+          (t) =>
+            String(t.pageId) === String(page.id)
+            && ["pending", "in_progress", "revision", "submitted"].includes(t.status)
+            && noteMatchesTaskRegion(note, t),
+        );
+        if (duplicate) continue;
+
+        await tasksService.create(
+          uiNoteToTaskCreate(note, {
+            pageId: page.id,
+            assignedTo: targetAssistantId,
+          }),
+        );
+        newTaskCount += 1;
+      }
+
+      await updateChapterStatus(chapter.id, "assistant");
+      await refreshMangakaTasks();
+      await refreshWorkspace();
+
+      if (notesToCreate.length === 0) {
+        toast.success(
+          `Đã gửi chapter ${chapter.num} — ${pages.length} trang cho Assistant (trang không có ghi chú vẫn gửi được).`,
+        );
+      } else if (newTaskCount === 0) {
+        toast.success(
+          `Đã gửi lại chapter ${chapter.num} — ${pages.length} trang (${notesToCreate.length} ghi chú, task đã có sẵn).`,
+        );
+      } else {
+        toast.success(
+          `Đã gửi chapter ${chapter.num} — ${pages.length} trang, ${newTaskCount} ghi chú mới cho Assistant.`,
+        );
+      }
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, "Gửi chapter cho Assistant thất bại."));
+    }
+  }
+
+  async function sendChapterToTantou({
     series,
     chapter,
     pageIndex = 0,
@@ -759,43 +665,28 @@ export default function Mangaka() {
     notes = [],
     imageOverride,
   }) {
-    if (!chapter?.series) return;
-    const ebOk = !!ebApprovedMap[series?.title ?? chapter.series];
-    const pipeline =
-      series?.needsFullDebutPipeline && !ebOk ? "debut" : "recurring";
-    const rank = DEMO_SERIES_RANKINGS.find((r) => r.title === chapter.series);
-    const sub = pushTantouSubmissionFromMangaka({
-      seriesTitle: chapter.series,
-      seriesMeta: {
-        genres: series?.genres ?? [],
-        formatLabel: series?.formatLabel ?? "Manga",
-        authorName: user?.name ?? "Mangaka",
-        qualityScore: rank ? 74 : 70,
-        popularityScore: rank ? 68 : 62,
-        needsFullDebutPipeline: series?.needsFullDebutPipeline,
-      },
-      chapterId: chapter.id,
-      chapterNum: chapter.num,
-      pageIndex,
-      pageName,
-      mangakaImageUrl: imageOverride,
-      mangakaNotes: notes,
-      mangakaName: user?.name ?? "Mangaka",
-      pipeline,
-    });
-    setChapterRows((prev) =>
-      prev.map((r) =>
-        r.series === chapter.series && String(r.num) === String(chapter.num)
-          ? {
-              ...r,
-              status: "tantou",
-              statusLabel: `Chờ ${LABEL_TANTOU_EDITOR}`,
-            }
-          : r,
-      ),
-    );
-    toast.success(`Đã gửi ${sub.pageLabel} sang ${LABEL_TANTOU_EDITOR}.`);
-    setTantouSendReady(null);
+    if (!chapter?.series || !chapter?.id) return;
+    try {
+      const res = await submissionsService.submitChapterToTe(chapter.id);
+      setChapterRows((prev) =>
+        prev.map((r) =>
+          r.id === chapter.id
+            ? {
+                ...r,
+                status: "tantou",
+                statusLabel: `Chờ ${LABEL_TANTOU_EDITOR}`,
+              }
+            : r,
+        ),
+      );
+      toast.success(
+        res.message || `Đã gửi Ch. ${chapter.num} sang ${LABEL_TANTOU_EDITOR}.`,
+      );
+    } catch (err) {
+      toast.error(
+        getApiErrorMessage(err, `Gửi chapter sang ${LABEL_TANTOU_EDITOR} thất bại.`),
+      );
+    }
   }
 
   function handleSendToTantou({
@@ -816,51 +707,43 @@ export default function Mangaka() {
     });
   }
 
-  function handleSendTantouFromReady() {
-    if (!tantouSendReady) return;
-    const { deliverable, chapter, notes } = tantouSendReady;
-    const series = seriesList.find((s) => s.title === chapter.series);
-    sendChapterToTantou({
-      series,
-      chapter,
-      pageIndex: deliverable.pageIndex ?? 0,
-      pageName: deliverable.pageLabel,
-      notes,
-      imageOverride:
-        deliverable.compositeDataUrl || deliverable.mangakaImageUrl,
-    });
+  async function handleApproveChapter() {
+    if (!pendingReview?.tasks?.length) return;
+    try {
+      await approveChapterTasks(pendingReview.tasks);
+      await updateChapterStatus(pendingReview.chapter.id, "done");
+      toast.success(
+        `Đã phê duyệt chapter ${pendingReview.chapter.num} — ${pendingReview.chapter.series}.`,
+      );
+      await refreshMangakaTasks();
+      await refreshWorkspace();
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, "Phê duyệt chapter thất bại."));
+    }
   }
 
-  function handleCompositeDecision(decision) {
-    if (!pendingCompositeReview) return;
-    const deliverableForDecision = pendingDeliverable ?? pendingDeliverableSlim;
-    if (deliverableForDecision) {
-      if (decision === "approve") {
-        const notes = deliverableForDecision.submissionId
-          ? (getAssistantSubmission(deliverableForDecision.submissionId)
-              ?.notes ?? [])
-          : [];
-        setTantouSendReady({
-          deliverable: { ...deliverableForDecision },
-          chapter: { ...pendingCompositeReview },
-          notes,
-        });
-      }
-      updateDeliverableStatus(
-        deliverableForDecision.id,
-        decision === "approve" ? "approved" : "revision_requested",
+  async function handleConfirmChapterRevision() {
+    if (!pendingReview?.tasks?.length || !pendingReview.chapter) return;
+    setRevisionBusy(true);
+    try {
+      const note =
+        revisionNote.trim()
+        || "Mangaka yêu cầu chỉnh sửa — xem ghi chú trên từng trang.";
+      await requestRevision(pendingReview.tasks, note);
+      await updateChapterStatus(pendingReview.chapter.id, "assistant");
+      setRevisionOpen(false);
+      setRevisionNote("");
+      toast.success(
+        "Đã trả chapter cho Assistant. Thêm ghi chú trên trang cần sửa rồi bấm Gửi cả chapter.",
       );
-      setDeliverableTick((t) => t + 1);
+      openAnnotate(pendingReview.chapter.series, pendingReview.chapter.id);
+      await refreshMangakaTasks();
+      await refreshWorkspace();
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, "Gửi yêu cầu sửa thất bại."));
+    } finally {
+      setRevisionBusy(false);
     }
-    setChapterRows((prev) =>
-      prev.map((r) => {
-        if (r.id !== pendingCompositeReview.id) return r;
-        if (decision === "approve") {
-          return { ...r, status: "done", statusLabel: "Đã duyệt bản tổng hợp" };
-        }
-        return { ...r, status: "review", statusLabel: "Yêu cầu chỉnh sửa" };
-      }),
-    );
   }
 
   const tantouRevisions = useMemo(
@@ -869,40 +752,9 @@ export default function Mangaka() {
   );
 
   useEffect(() => {
-    const onSync = () => setDeliverableTick((t) => t + 1);
-    migrateAssistantStorage().finally(onSync);
-    window.addEventListener("storage", onSync);
-    window.addEventListener("mk-assistant-storage", onSync);
-    return () => {
-      window.removeEventListener("storage", onSync);
-      window.removeEventListener("mk-assistant-storage", onSync);
-    };
-  }, []);
-
-  useEffect(() => {
-    const onRoster = () => setRosterTick((t) => t + 1);
-    window.addEventListener("storage", onRoster);
-    window.addEventListener("mk-assistant-roster-update", onRoster);
-    return () => {
-      window.removeEventListener("storage", onRoster);
-      window.removeEventListener("mk-assistant-roster-update", onRoster);
-    };
-  }, []);
-
-  useEffect(() => {
     const onTantou = () => setTantouTick((t) => t + 1);
     window.addEventListener("mk-tantou-storage", onTantou);
     return () => window.removeEventListener("mk-tantou-storage", onTantou);
-  }, []);
-
-  useEffect(() => {
-    const onWorkspaceUpdate = () => {
-      const next = readMangakaWorkspace();
-      setSeriesList(next.seriesList);
-    };
-    window.addEventListener("mk-workspace-update", onWorkspaceUpdate);
-    return () =>
-      window.removeEventListener("mk-workspace-update", onWorkspaceUpdate);
   }, []);
 
   const workflowSteps = useMemo(() => {
@@ -972,39 +824,6 @@ export default function Mangaka() {
     });
   }, [annotatorChapters, annotatorNotes]);
 
-  const workspaceSnapshot = useMemo(
-    () => ({
-      tab,
-      annotateSeries,
-      seriesList,
-      chapterRows,
-      annotatorChapters,
-      annotatorNotes,
-      annotatorActiveChapterId,
-      annotatorPageIndex,
-      annotatorChapterNum,
-      annotatorPagesPerChapter,
-      annotatorUploadPageBudget,
-    }),
-    [
-      tab,
-      annotateSeries,
-      seriesList,
-      chapterRows,
-      annotatorChapters,
-      annotatorNotes,
-      annotatorActiveChapterId,
-      annotatorPageIndex,
-      annotatorChapterNum,
-      annotatorPagesPerChapter,
-      annotatorUploadPageBudget,
-    ],
-  );
-
-  useEffect(() => {
-    persistMangakaWorkspaceState(workspaceSnapshot);
-  }, [workspaceSnapshot]);
-
   function handleUploadProgress(series, pct) {
     const key = series.trim();
     if (!key) return;
@@ -1017,95 +836,6 @@ export default function Mangaka() {
       return;
     }
     setUploadPctBySeries((prev) => ({ ...prev, [key]: pct }));
-  }
-
-  function handleUploadComplete(payload) {
-    const {
-      series: titleRaw,
-      num,
-      pages,
-      createdAt,
-      chapterLocalId,
-      isNewChapter,
-      annotatorChapters: nextAnnotatorChapters,
-    } = payload;
-    const title = typeof titleRaw === "string" ? titleRaw.trim() : titleRaw;
-    if (!title) return;
-
-    const rowId =
-      chapterLocalId ||
-      `u-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-    const displayNum =
-      typeof num === "number" && Number.isFinite(num) ? num : num;
-    const dateStr = createdAt ?? new Date().toLocaleDateString("vi-VN");
-
-    const nextChapterRows = (() => {
-      const idx = chapterRows.findIndex((r) => r.id === rowId);
-      if (idx >= 0) {
-        return chapterRows.map((r, i) =>
-          i === idx ? { ...r, pages, date: dateStr } : r,
-        );
-      }
-      return [
-        {
-          id: rowId,
-          series: title,
-          num: displayNum,
-          type: "PNG",
-          pages,
-          status: "draft",
-          date: dateStr,
-        },
-        ...chapterRows,
-      ];
-    })();
-
-    setChapterRows(nextChapterRows);
-
-    setSeriesList((prev) => {
-      const idx = prev.findIndex((s) => s.title === title);
-      const bump = Math.min(22, Math.max(10, Math.round((pages ?? 18) / 5)));
-      if (idx === -1) {
-        const maxId = prev.reduce((m, s) => Math.max(m, s.id), 0);
-        const created = buildSeriesFromUploadTitle(title, {
-          id: maxId + 1,
-          authorName: user?.name,
-          colorIndex: maxId,
-        });
-        return [
-          { ...created, chapters: 1, progress: Math.min(100, bump + 18) },
-          ...prev,
-        ];
-      }
-      return prev.map((s, i) => {
-        if (i !== idx) return s;
-        const nextCount = isNewChapter
-          ? (s.chapters ?? 0) + 1
-          : (s.chapters ?? 0);
-        return {
-          ...s,
-          chapters: nextCount,
-          progress: Math.min(
-            99,
-            (s.progress ?? 0) + (isNewChapter ? bump : Math.min(8, bump)),
-          ),
-          updated: "Vừa upload",
-          statusLabel:
-            s.status === "assistant" ? s.statusLabel : "Đã có upload",
-          ...(s.status !== "assistant" && s.status !== "review"
-            ? { status: "draft" }
-            : {}),
-        };
-      });
-    });
-
-    void persistMangakaWorkspaceStateNow({
-      ...workspaceSnapshot,
-      chapterRows: nextChapterRows,
-      annotatorChapters: Array.isArray(nextAnnotatorChapters)
-        ? nextAnnotatorChapters
-        : annotatorChapters,
-    });
   }
 
   useEffect(() => {
@@ -1130,54 +860,33 @@ export default function Mangaka() {
     setEditingSeries(null);
   }
 
-  function confirmUpdateSeries(form) {
+  async function confirmUpdateSeries(form, meta) {
     if (!editingSeries) return;
-    const oldTitle = editingSeries.title;
-    const updated = applySeriesFormUpdate(
-      seriesList.find((s) => s.id === editingSeries.id) ?? editingSeries,
-      form,
-    );
-    const newTitle = updated.title;
-
-    setSeriesList((prev) => {
-      const next = prev.map((s) => (s.id === editingSeries.id ? updated : s));
+    try {
+      const updated = await updateSeries(editingSeries, form, meta?.coverFile ?? null);
       syncEbDebutPendingFromSeries(
-        next
+        seriesList
+          .map(s => (s.id === editingSeries.id ? updated : s))
           .filter((s) => s.needsFullDebutPipeline)
           .map(seriesToExternalSummary),
       );
-      return next;
-    });
-
-    if (oldTitle !== newTitle) {
-      setChapterRows((prev) =>
-        prev.map((c) =>
-          c.series === oldTitle ? { ...c, series: newTitle } : c,
-        ),
-      );
-      setAnnotatorChapters((prev) =>
-        prev.map((ch) =>
-          ch.series === oldTitle ? { ...ch, series: newTitle } : ch,
-        ),
-      );
-      if (annotateSeries === oldTitle) setAnnotateSeries(newTitle);
+      if (annotateSeries === editingSeries.title) setAnnotateSeries(updated.title);
+      closeAddSeriesModal();
+      navigate(seriesPath(updated));
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, "Cập nhật series thất bại."));
     }
-
-    closeAddSeriesModal();
-    navigate(seriesPath(updated));
   }
 
-  function confirmAddSeries(form) {
-    const maxId = seriesList.reduce((m, s) => Math.max(m, s.id), 0);
-    const newSeries = buildSeriesFromForm(form, {
-      id: maxId + 1,
-      authorName: user?.name,
-      authorId: user?.email ?? null,
-    });
-    setSeriesList((prev) => [newSeries, ...prev]);
-    setAnnotateSeries(newSeries.title);
-    closeAddSeriesModal();
-    navigate(seriesPath(newSeries));
+  async function confirmAddSeries(form, meta) {
+    try {
+      const newSeries = await createSeries(form, meta?.coverFile ?? null);
+      setAnnotateSeries(newSeries.title);
+      closeAddSeriesModal();
+      navigate(seriesPath(newSeries));
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, "Tạo series thất bại."));
+    }
   }
 
   const existingSeriesTitles = useMemo(
@@ -1205,7 +914,7 @@ export default function Mangaka() {
     );
   }
 
-  function deleteSeriesById(seriesId) {
+  async function deleteSeriesById(seriesId) {
     const target = seriesList.find((x) => x.id === seriesId);
     if (!target) return;
     const title = target.title;
@@ -1215,44 +924,15 @@ export default function Mangaka() {
     if (!ok) return;
 
     removeEbDebutApproval(title);
-
-    const chaptersToDrop = annotatorChapters.filter(
-      (ch) => ch.series === title,
-    );
-    chaptersToDrop.forEach((ch) => {
-      ch.pages?.forEach((p) => {
-        if (p?.url?.startsWith("blob:")) URL.revokeObjectURL(p.url);
-      });
-    });
-
-    const nextAnnotator = annotatorChapters.filter((ch) => ch.series !== title);
-    setAnnotatorChapters(nextAnnotator);
-    setAnnotatorNotes((prev) => {
-      const next = { ...prev };
-      chaptersToDrop.forEach((ch) => {
-        Object.keys(next).forEach((k) => {
-          if (k.startsWith(`${ch.id}-`)) delete next[k];
-        });
-      });
-      return next;
-    });
-    setAnnotatorActiveChapterId((prev) => {
-      if (nextAnnotator.some((c) => c.id === prev)) return prev;
-      return nextAnnotator[0]?.id ?? null;
-    });
-    setAnnotatorPageIndex(0);
-
-    const remainingSeries = seriesList.filter((s) => s.id !== seriesId);
-    setSeriesList(remainingSeries);
-    setChapterRows((prev) => prev.filter((c) => c.series !== title));
-    setUploadPctBySeries((prev) => {
-      const next = { ...prev };
-      delete next[title];
-      return next;
-    });
-    setAnnotateSeries((cur) =>
-      cur !== title ? cur : (remainingSeries[0]?.title ?? ""),
-    );
+    try {
+      await removeSeries(seriesId);
+      setAnnotateSeries((cur) =>
+        cur !== title ? cur : (seriesList.filter(s => s.id !== seriesId)[0]?.title ?? ""),
+      );
+      toast.success(`Đã xóa series "${title}".`);
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, "Xóa series thất bại."));
+    }
   }
 
   useEffect(() => {
@@ -1505,10 +1185,7 @@ export default function Mangaka() {
               </TabsContent>
 
               <TabsContent value="assistants">
-                <MangakaAssistants
-                  mangakaId={mangakaId}
-                  mangakaName={mangakaName}
-                />
+                <MangakaAssistants />
               </TabsContent>
 
               <TabsContent value="annotate">
@@ -1534,9 +1211,9 @@ export default function Mangaka() {
                   hiredAssistants={hiredAssistants}
                   onOpenAssistantsTab={() => setTab("assistants")}
                   onUploadProgress={handleUploadProgress}
-                  onUploadComplete={handleUploadComplete}
                   onSendToAssistant={handleSendToAssistant}
                   onSendToTantou={handleSendToTantou}
+                  workspaceApi={workspaceApi}
                 />
               </TabsContent>
             </Tabs>
@@ -1626,54 +1303,39 @@ export default function Mangaka() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <Badge
-                    className={
-                      pendingCompositeReview.status === "assistant"
-                        ? STATUS_BADGE.assistant.className
-                        : STATUS_BADGE.review.className
-                    }
+                    className={STATUS_BADGE.review.className}
                     variant="secondary"
                   >
-                    {pendingCompositeReview.status === "assistant"
-                      ? "Chờ duyệt"
-                      : "Chờ bạn phản hồi"}
+                    Chờ duyệt
                   </Badge>
 
                   <div className="overflow-hidden rounded-lg border bg-muted">
-                    {pendingDeliverable?.compositeDataUrl ? (
-                      <img
-                        src={pendingDeliverable.compositeDataUrl}
-                        alt={`Bản ghép ${pendingDeliverable.pageLabel}`}
-                        className="w-full"
-                      />
-                    ) : pendingDeliverable?.overlayDataUrl ? (
-                      <div className="relative">
-                        {pendingDeliverable.mangakaImageUrl ? (
+                    {pendingPageResults.length > 0 ? (
+                      <div className="divide-y">
+                        {pendingPageResults.map((url, i) => (
                           <img
-                            src={pendingDeliverable.mangakaImageUrl}
-                            alt="Ảnh gốc"
+                            key={url}
+                            src={url}
+                            alt={`Trang ${i + 1} từ Assistant`}
                             className="w-full"
                           />
-                        ) : null}
-                        <img
-                          src={pendingDeliverable.overlayDataUrl}
-                          alt="Layer Assistant"
-                          className="absolute inset-0 w-full"
-                        />
+                        ))}
                       </div>
                     ) : (
                       <div className="flex flex-col items-center justify-center gap-1 p-6 text-center text-xs text-muted-foreground">
                         <ImageIcon className="size-6 opacity-40" />
-                        <span>Chờ Assistant gửi layer</span>
+                        <span>
+                          {tasksLoading
+                            ? "Đang tải chapter từ Assistant..."
+                            : "Chờ Assistant nộp đủ ảnh các trang"}
+                        </span>
                       </div>
                     )}
                   </div>
 
-                  {pendingDeliverable ? (
+                  {pendingSubmittedTasks.length > 0 ? (
                     <p className="text-xs text-muted-foreground">
-                      {pendingDeliverable.pageLabel}
-                      {pendingDeliverable.sendMode === "overlay"
-                        ? " · Layer trong suốt"
-                        : " · Bản ghép"}
+                      {pendingPageResults.length} trang · {pendingSubmittedTasks.length} task đã nộp
                     </p>
                   ) : null}
 
@@ -1681,31 +1343,20 @@ export default function Mangaka() {
                     <Button
                       size="sm"
                       className="flex-1"
-                      onClick={() => handleCompositeDecision("approve")}
+                      onClick={() => void handleApproveChapter()}
                     >
                       <CheckCircle2 className="size-3.5" />
-                      Phê duyệt
+                      Phê duyệt chapter
                     </Button>
                     <Button
                       size="sm"
                       variant="outline"
                       className="flex-1"
-                      onClick={() => handleCompositeDecision("revision")}
+                      onClick={() => setRevisionOpen(true)}
                     >
                       Yêu cầu sửa
                     </Button>
                   </div>
-
-                  {tantouSendReady ? (
-                    <Button
-                      size="sm"
-                      className="w-full"
-                      onClick={handleSendTantouFromReady}
-                    >
-                      <Send className="size-3.5" />
-                      Gửi {LABEL_TANTOU_EDITOR}
-                    </Button>
-                  ) : null}
 
                   <Button
                     size="sm"
@@ -1838,6 +1489,39 @@ export default function Mangaka() {
       </main>
 
       <Footer />
+
+      <Dialog open={revisionOpen} onOpenChange={setRevisionOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Yêu cầu sửa chapter</DialogTitle>
+            <DialogDescription>
+              Ghi chú chung (tuỳ chọn), sau đó thêm ghi chú trên từng trang chưa đạt
+              rồi <strong>gửi lại cả chapter</strong> cho Assistant.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="revision-note">Ghi chú cho Assistant</Label>
+            <Textarea
+              id="revision-note"
+              rows={4}
+              placeholder="VD: Trang 3–5 cần tô bóng lại, trang 7 màu nền chưa khớp..."
+              value={revisionNote}
+              onChange={(e) => setRevisionNote(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRevisionOpen(false)}>
+              Huỷ
+            </Button>
+            <Button
+              disabled={revisionBusy}
+              onClick={() => void handleConfirmChapterRevision()}
+            >
+              {revisionBusy ? "Đang gửi..." : "Trả chapter & mở ghi chú"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AddSeriesModal
         open={addSeriesOpen}

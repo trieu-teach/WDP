@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import {
   Eraser,
   Image as ImageIcon,
@@ -41,6 +42,10 @@ function uid() {
   return `note-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
 }
 
+function noteStableKey(note) {
+  return note?.clientKey ?? note?.id ?? ''
+}
+
 function displayChapterNum(baseStr, index) {
   const s = String(baseStr ?? '').trim()
   if (!s) return String(index + 1)
@@ -76,14 +81,16 @@ export default function ChapterAnnotator({
   hiredAssistants = [],
   onOpenAssistantsTab,
   onUploadProgress,
-  onUploadComplete,
   onSendToAssistant,
   onSendToTantou,
+  workspaceApi = null,
 }) {
   const fileRef = useRef(null)
   const coverFileRef = useRef(null)
   const boardRef = useRef(null)
   const fsBoardRef = useRef(null)
+  const noteSaveTimersRef = useRef({})
+  const loadedNoteKeysRef = useRef(new Set())
 
   const [drawStart, setDrawStart] = useState(null)
   const [drawCurrent, setDrawCurrent] = useState(null)
@@ -92,10 +99,12 @@ export default function ChapterAnnotator({
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [uploadUi, setUploadUi] = useState(null)
   const [uploadRejectMessage, setUploadRejectMessage] = useState(null)
+  const [sendAssistantId, setSendAssistantId] = useState('')
 
   const activeChapter = chapters.find(c => c.id === activeChapterId)
   const pages = activeChapter?.pages ?? []
   const pageKey = activeChapter ? `${activeChapterId}-${pageIndex}` : ''
+  const currentPageId = pages[pageIndex]?.id ?? null
   const pageNotes = notes[pageKey] ?? []
 
   useEffect(() => {
@@ -115,13 +124,20 @@ export default function ChapterAnnotator({
     return () => window.clearTimeout(t)
   }, [uploadRejectMessage])
 
-  const deleteNote = useCallback((id) => {
+  const deleteNote = useCallback(async (stableKey) => {
+    const page = pages[pageIndex]
+    const target = (notes[pageKey] ?? []).find(n => noteStableKey(n) === stableKey)
+    if (workspaceApi?.deletePageNote && page?.id && target?.id) {
+      try {
+        await workspaceApi.deletePageNote(page.id, pageKey, target.id)
+      } catch { /* local fallback below */ }
+    }
     setNotes(prev => ({
       ...prev,
-      [pageKey]: (prev[pageKey] ?? []).filter(n => n.id !== id),
+      [pageKey]: (prev[pageKey] ?? []).filter(n => noteStableKey(n) !== stableKey),
     }))
-    setSelectedNoteId(prev => (prev === id ? null : prev))
-  }, [setNotes, pageKey])
+    setSelectedNoteId(prev => (prev === stableKey ? null : prev))
+  }, [setNotes, pageKey, pages, pageIndex, workspaceApi, notes])
 
   useEffect(() => {
     function onKey(e) {
@@ -146,6 +162,42 @@ export default function ChapterAnnotator({
     () => chapters.find(c => c.id === activeChapterId && c.series === selectedSeriesTitle.trim()) ?? null,
     [chapters, activeChapterId, selectedSeriesTitle],
   )
+
+  useEffect(() => {
+    if (hiredAssistants.length === 1 && !sendAssistantId) {
+      setSendAssistantId(String(hiredAssistants[0].assistantId))
+    }
+  }, [hiredAssistants, sendAssistantId])
+
+  const persistNoteById = useCallback(async (stableKey) => {
+    const page = pages[pageIndex]
+    if (!workspaceApi?.savePageNote || !page?.id || !pageKey || !stableKey) return
+
+    let noteSnapshot = null
+    setNotes(prev => {
+      noteSnapshot = (prev[pageKey] ?? []).find(n => noteStableKey(n) === stableKey) ?? null
+      return prev
+    })
+    if (!noteSnapshot) return
+
+    try {
+      await workspaceApi.savePageNote(page.id, pageKey, noteSnapshot)
+    } catch {
+      /* giữ bản local, thử lại lần sau */
+    }
+  }, [pageIndex, pageKey, pages, workspaceApi, setNotes])
+
+  const scheduleNoteSave = useCallback((stableKey) => {
+    if (!stableKey) return
+    clearTimeout(noteSaveTimersRef.current[stableKey])
+    noteSaveTimersRef.current[stableKey] = window.setTimeout(() => {
+      void persistNoteById(stableKey)
+    }, 600)
+  }, [persistNoteById])
+
+  useEffect(() => () => {
+    Object.values(noteSaveTimersRef.current).forEach(t => window.clearTimeout(t))
+  }, [])
 
   useEffect(() => {
     const trimmed = selectedSeriesTitle.trim()
@@ -178,7 +230,7 @@ export default function ChapterAnnotator({
     return nums.length === 0 ? 1 : Math.max(...nums) + 1
   }, [selectedSeriesTitle, chapters])
 
-  const createNewChapter = useCallback(() => {
+  const createNewChapter = useCallback(async () => {
     const trimmedSeries = selectedSeriesTitle.trim()
     if (!trimmedSeries) return
 
@@ -190,6 +242,23 @@ export default function ChapterAnnotator({
       return
     }
 
+    const seriesMeta = seriesOptions.find(s => s.title === trimmedSeries)
+    if (workspaceApi?.createChapter && seriesMeta?.id) {
+      try {
+        const ch = await workspaceApi.createChapter(seriesMeta.id, trimmedSeries, num)
+        setChapters(prev => [ch, ...prev])
+        setActiveChapterId(ch.id)
+        setPageIndex(0)
+        setSelectedNoteId(null)
+        setUploadRejectMessage(null)
+        onChapterNumChange?.(String(num + 1))
+        return
+      } catch {
+        setUploadRejectMessage('Không tạo được chapter — thử lại.')
+        return
+      }
+    }
+
     const createdAt = new Date().toLocaleDateString('vi-VN')
     const ch = { id: uid(), series: trimmedSeries, num, pages: [], createdAt }
     setChapters(prev => [ch, ...prev])
@@ -197,11 +266,10 @@ export default function ChapterAnnotator({
     setPageIndex(0)
     setSelectedNoteId(null)
     setUploadRejectMessage(null)
-
     onChapterNumChange?.(String(num + 1))
   }, [
-    selectedSeriesTitle, nextChapterNum, chapters, setChapters,
-    setActiveChapterId, setPageIndex, onChapterNumChange, activateChapter,
+    selectedSeriesTitle, nextChapterNum, chapters, setChapters, seriesOptions,
+    setActiveChapterId, setPageIndex, onChapterNumChange, activateChapter, workspaceApi,
   ])
 
   const handleFiles = useCallback(async (files) => {
@@ -224,71 +292,52 @@ export default function ChapterAnnotator({
     )
     if (!fileList.length) return
 
-    const hadPages = target.pages.length > 0
     const targetId = target.id
-    const hasSync = typeof onUploadProgress === 'function' || typeof onUploadComplete === 'function'
+    const hasProgress = typeof onUploadProgress === 'function'
     const sleep = ms => new Promise(r => setTimeout(r, ms))
     const filesToAdd = fileList
     let newPages = []
 
     try {
-      if (hasSync && typeof onUploadProgress === 'function') {
+      if (hasProgress) {
         onUploadProgress(trimmedSeries, 5)
         setUploadUi({ series: trimmedSeries, chapter: target.num, pct: 5 })
       }
 
-      for (let i = 0; i < filesToAdd.length; i++) {
-        const url = await fileToStorableDataUrl(filesToAdd[i])
-        newPages.push({ id: uid(), name: filesToAdd[i].name, url })
-        if (hasSync && typeof onUploadProgress === 'function') {
-          const pct = 10 + Math.round(((i + 1) / filesToAdd.length) * 80)
-          setUploadUi({ series: trimmedSeries, chapter: target.num, pct })
-          onUploadProgress(trimmedSeries, pct)
+      if (workspaceApi?.uploadChapterPages) {
+        newPages = await workspaceApi.uploadChapterPages(targetId, filesToAdd)
+        setNotes(prev => {
+          const next = { ...prev }
+          const startIdx = target.pages.length
+          for (let pi = 0; pi < newPages.length; pi++) {
+            const key = `${targetId}-${startIdx + pi}`
+            if (!next[key]) next[key] = []
+          }
+          return next
+        })
+      } else {
+        for (let i = 0; i < filesToAdd.length; i++) {
+          const url = await fileToStorableDataUrl(filesToAdd[i])
+          newPages.push({ id: uid(), name: filesToAdd[i].name, url })
+          if (hasProgress) {
+            const pct = 10 + Math.round(((i + 1) / filesToAdd.length) * 80)
+            setUploadUi({ series: trimmedSeries, chapter: target.num, pct })
+            onUploadProgress(trimmedSeries, pct)
+          }
         }
+        const nextChapters = chapters.map(ch => (
+          ch.id !== targetId ? ch : { ...ch, pages: [...ch.pages, ...newPages] }
+        ))
+        setChapters(nextChapters)
       }
     } catch {
-      setUploadRejectMessage('Không đọc được một hoặc nhiều ảnh — thử lại.')
+      setUploadRejectMessage('Không upload được ảnh — thử lại.')
       setUploadUi(null)
-      if (typeof onUploadProgress === 'function') onUploadProgress(trimmedSeries, 0)
+      if (hasProgress) onUploadProgress(trimmedSeries, 0)
       return
     }
 
-    const createdAt = target.createdAt ?? new Date().toLocaleDateString('vi-VN')
-    const nextChapters = chapters.map(ch => (
-      ch.id !== targetId ? ch : { ...ch, pages: [...ch.pages, ...newPages] }
-    ))
-
-    setChapters(nextChapters)
-
-    setNotes(prev => {
-      const next = { ...prev }
-      const startIdx = target.pages.length
-      for (let pi = 0; pi < newPages.length; pi++) {
-        const key = `${targetId}-${startIdx + pi}`
-        if (!next[key]) next[key] = []
-      }
-      return next
-    })
-
-    if (typeof onUploadComplete === 'function') {
-      let numParsed = target.num
-      if (typeof numParsed === 'string') {
-        numParsed = parseInt(numParsed, 10)
-        if (Number.isNaN(numParsed)) numParsed = target.num
-      }
-      const totalPages = target.pages.length + newPages.length
-      onUploadComplete({
-        series: trimmedSeries,
-        num: numParsed,
-        pages: totalPages,
-        chapterLocalId: targetId,
-        createdAt,
-        isNewChapter: !hadPages,
-        annotatorChapters: nextChapters,
-      })
-    }
-
-    if (hasSync && typeof onUploadProgress === 'function') {
+    if (hasProgress) {
       onUploadProgress(trimmedSeries, 100)
       await sleep(400)
       onUploadProgress(trimmedSeries, 0)
@@ -296,7 +345,7 @@ export default function ChapterAnnotator({
     setUploadUi(null)
   }, [
     selectedSeriesTitle, activeChapterId, chapters, setChapters, setNotes,
-    onUploadProgress, onUploadComplete,
+    onUploadProgress, workspaceApi,
   ])
 
   function onFileChange(e) {
@@ -371,13 +420,13 @@ export default function ChapterAnnotator({
     return { x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)) }
   }
 
-  function onNoteClick(e, noteId) {
+  function onNoteClick(e, stableKey) {
     e.stopPropagation()
     if (tool === 'delete') {
-      deleteNote(noteId)
+      deleteNote(stableKey)
       return
     }
-    setSelectedNoteId(noteId)
+    setSelectedNoteId(stableKey)
     setTool('select')
   }
 
@@ -406,20 +455,51 @@ export default function ChapterAnnotator({
     setDrawCurrent(null)
     if (w < 2 || h < 2) return
 
-    const newNote = { id: uid(), x, y, w, h, text: '', taskType: 'background', assignee: '' }
+    const clientKey = uid()
+    const newNote = {
+      id: clientKey,
+      clientKey,
+      x,
+      y,
+      w,
+      h,
+      text: '',
+      taskType: 'background',
+      assignee: '',
+    }
     setNotes(prev => ({
       ...prev,
       [pageKey]: [...(prev[pageKey] ?? []), newNote],
     }))
-    setSelectedNoteId(newNote.id)
+    setSelectedNoteId(clientKey)
+    scheduleNoteSave(clientKey)
   }
 
-  function updateNoteField(id, field, value) {
+  function updateNoteField(stableKey, field, value) {
     setNotes(prev => ({
       ...prev,
-      [pageKey]: (prev[pageKey] ?? []).map(n => (n.id === id ? { ...n, [field]: value } : n)),
+      [pageKey]: (prev[pageKey] ?? []).map(n => (
+        noteStableKey(n) === stableKey ? { ...n, [field]: value } : n
+      )),
     }))
+    scheduleNoteSave(stableKey)
   }
+
+  useEffect(() => {
+    if (!activeChapterId || !workspaceApi?.loadChapterPages) return
+    void workspaceApi.loadChapterPages(activeChapterId)
+  }, [activeChapterId, workspaceApi?.loadChapterPages])
+
+  useEffect(() => {
+    if (!workspaceApi?.loadPageNotes || !currentPageId || !pageKey) return
+    if (loadedNoteKeysRef.current.has(pageKey)) return
+    loadedNoteKeysRef.current.add(pageKey)
+    void workspaceApi.loadPageNotes(currentPageId, pageKey)
+  }, [currentPageId, pageKey, workspaceApi?.loadPageNotes])
+
+  useEffect(() => {
+    loadedNoteKeysRef.current.clear()
+  }, [activeChapterId])
 
   function goPage(delta) {
     setPageIndex(i => {
@@ -625,16 +705,18 @@ export default function ChapterAnnotator({
           </div>
         )}
 
-        {pageNotes.map((n, idx) => (
+        {pageNotes.map((n, idx) => {
+          const stableKey = noteStableKey(n)
+          return (
           <div
-            key={n.id}
+            key={stableKey}
             className={cn(
               'mk-note-box',
-              selectedNoteId === n.id && 'selected',
+              selectedNoteId === stableKey && 'selected',
               tool === 'delete' && 'mk-note-box--target',
             )}
             style={{ left: `${n.x}%`, top: `${n.y}%`, width: `${n.w}%`, height: `${n.h}%` }}
-            onClick={e => onNoteClick(e, n.id)}
+            onClick={e => onNoteClick(e, stableKey)}
           >
             <span className="mk-note-box__num">{idx + 1}</span>
             {n.taskType ? (
@@ -642,18 +724,18 @@ export default function ChapterAnnotator({
                 {noteTaskLabel(n.taskType)}
               </span>
             ) : null}
-            {(selectedNoteId === n.id || tool === 'delete') ? (
+            {(selectedNoteId === stableKey || tool === 'delete') ? (
               <button
                 type="button"
                 className="mk-note-box__delete"
-                onClick={e => { e.stopPropagation(); deleteNote(n.id) }}
+                onClick={e => { e.stopPropagation(); deleteNote(stableKey) }}
                 aria-label={`Gỡ ô ghi chú ${idx + 1}`}
               >
                 ×
               </button>
             ) : null}
           </div>
-        ))}
+        )})}
 
         {draftRect ? (
           <div
@@ -711,7 +793,7 @@ export default function ChapterAnnotator({
 
           {pageNotes.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              Chưa có ô nào. Chọn <strong>Tạo ô</strong>, kéo vùng trên trang, chọn loại việc và giao trợ lý.
+              Chưa có ô nào. Chọn <strong>Tạo ô</strong>, kéo vùng trên trang và mô tả việc cần làm. Gửi Assistant ở cuối — cả chapter giao cho 1 người.
             </p>
           ) : (
             <div
@@ -721,75 +803,49 @@ export default function ChapterAnnotator({
               )}
             >
               <ul className="space-y-3">
-                {pageNotes.map((n, idx) => (
+                {pageNotes.map((n, idx) => {
+                  const stableKey = noteStableKey(n)
+                  return (
                   <li
-                    key={n.id}
+                    key={stableKey}
                     className={cn(
                       'rounded-lg border p-3 transition-colors',
-                      selectedNoteId === n.id ? 'border-primary bg-primary/5' : 'bg-background',
+                      selectedNoteId === stableKey ? 'border-primary bg-primary/5' : 'bg-background',
                     )}
                   >
                     <div className="mb-2 flex items-center justify-between">
                       <Badge variant="outline">Ô #{idx + 1}</Badge>
-                      <Button size="xs" variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => deleteNote(n.id)}>
+                      <Button size="xs" variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => deleteNote(stableKey)}>
                         <Trash2 className="size-3" />
                         Gỡ
                       </Button>
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="space-y-1">
-                        <Label className="text-xs">Loại việc</Label>
-                        <Select
-                          value={n.taskType ?? 'background'}
-                          onValueChange={v => updateNoteField(n.id, 'taskType', v)}
-                        >
-                          <SelectTrigger className="h-8" onFocus={() => setSelectedNoteId(n.id)}>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {NOTE_TASK_TYPES.map(t => (
-                              <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Trợ lý</Label>
-                        {hiredAssistants.length > 0 ? (
-                          <Select
-                            value={n.assignee || '__none__'}
-                            onValueChange={v => updateNoteField(n.id, 'assignee', v === '__none__' ? '' : v)}
-                          >
-                            <SelectTrigger className="h-8" onFocus={() => setSelectedNoteId(n.id)}>
-                              <SelectValue placeholder="Chọn Assistant" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="__none__">— Chưa chọn —</SelectItem>
-                              {hiredAssistants.map(a => (
-                                <SelectItem key={a.assistantId} value={a.value}>{a.label}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          <Input
-                            className="h-8"
-                            placeholder="Thuê Assistant trước"
-                            value={n.assignee ?? ''}
-                            disabled
-                          />
-                        )}
-                      </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Loại việc</Label>
+                      <Select
+                        value={n.taskType ?? 'background'}
+                        onValueChange={v => updateNoteField(stableKey, 'taskType', v)}
+                      >
+                        <SelectTrigger className="h-8" onFocus={() => setSelectedNoteId(stableKey)}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {NOTE_TASK_TYPES.map(t => (
+                            <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
                     <Textarea
                       className="mt-2 text-sm"
                       placeholder="Mô tả chi tiết (VD: vẽ cảnh phố đêm, thêm đèn neon)..."
-                      value={n.text}
-                      onChange={e => updateNoteField(n.id, 'text', e.target.value)}
-                      onFocus={() => setSelectedNoteId(n.id)}
+                      value={n.text ?? ''}
+                      onChange={e => updateNoteField(stableKey, 'text', e.target.value)}
+                      onFocus={() => setSelectedNoteId(stableKey)}
                       rows={3}
                     />
                   </li>
-                ))}
+                )})}
               </ul>
             </div>
           )}
@@ -801,13 +857,10 @@ export default function ChapterAnnotator({
   function SendActionsBar({ compact = false }) {
     const handleAssistant = () => {
       if (!activeChapter || !onSendToAssistant) return
-      const page = pages[pageIndex]
       onSendToAssistant({
         chapter: activeChapter,
-        pageIndex,
-        pageUrl: page?.url ?? null,
-        pageName: page?.name,
-        notes: pageNotes,
+        pages,
+        assistantId: sendAssistantId,
       })
     }
     const handleTantou = () => {
@@ -829,17 +882,38 @@ export default function ChapterAnnotator({
           compact && 'border-white/10 bg-zinc-900/80 text-white shadow-xl backdrop-blur',
         )}
       >
-        <CardContent className={cn('flex flex-wrap items-center gap-3', compact ? 'p-3' : 'p-4')}>
-          <div className="min-w-0 flex-1">
+        <CardContent className={cn('space-y-3', compact ? 'p-3' : 'p-4')}>
+          <div className="min-w-0">
             <p className={cn('text-sm font-semibold', compact && 'text-white')}>
-              Sẵn sàng bàn giao Trang {pageIndex + 1}
+              Gửi cả chapter {activeChapter ? `Ch. ${activeChapter.num}` : ''} cho Assistant
             </p>
             <p className={cn('text-xs', compact ? 'text-zinc-300' : 'text-muted-foreground')}>
-              {pageNotes.length > 0
-                ? `${pageNotes.length} ô ghi chú trên trang này · ${totalNotes} ô toàn chapter`
-                : `Chưa ghi chú nào trên trang · ${totalNotes} ô toàn chapter`}
+              {pages.length} trang · {totalNotes} ô ghi chú · 1 chapter = 1 Assistant · trang không có ghi chú vẫn gửi được
             </p>
           </div>
+          {hiredAssistants.length > 0 ? (
+            <div className="space-y-1">
+              <Label className={cn('text-xs', compact && 'text-zinc-300')}>Assistant nhận chapter</Label>
+              <Select
+                value={sendAssistantId ? String(sendAssistantId) : '__none__'}
+                onValueChange={v => setSendAssistantId(v === '__none__' ? '' : v)}
+              >
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="Chọn Assistant" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">— Chọn Assistant —</SelectItem>
+                  {hiredAssistants.map(a => (
+                    <SelectItem key={a.assistantId} value={String(a.assistantId)}>{a.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : (
+            <p className={cn('text-xs', compact ? 'text-zinc-400' : 'text-muted-foreground')}>
+              Thuê Assistant ở tab <strong>Thuê Assistant</strong> trước khi gửi chapter.
+            </p>
+          )}
           <div className="flex flex-wrap items-center gap-2">
             {onSendToTantou ? (
               <Button
@@ -855,11 +929,11 @@ export default function ChapterAnnotator({
             ) : null}
             <Button
               size="sm"
-              disabled={!activeChapter || pages.length === 0 || pageNotes.length === 0}
+              disabled={!activeChapter || pages.length === 0 || !sendAssistantId}
               onClick={handleAssistant}
             >
               <Send className="size-3.5" />
-              Gửi Assistant ({totalNotes} ô)
+              Gửi cả chapter
             </Button>
           </div>
         </CardContent>
