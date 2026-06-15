@@ -78,18 +78,10 @@ export function slugifySeriesTitle(title) {
 
 export function createEmptySeriesForm(authorName = '') {
   return {
-    title: '',
-    altTitle: '',
-    synopsis: '',
-    genres: [],
-    demographic: 'shonen',
-    format: 'manga',
-    language: 'vi',
-    contentRating: 'all',
-    publicationStatus: 'preparing',
-    publishType: 'debut',
-    color: SERIES_PALETTE[0],
-    tags: '',
+    name: '',
+    description: '',
+    genre: '',
+    target_audience: '',
   }
 }
 
@@ -201,81 +193,51 @@ export function seriesToExternalSummary(series) {
 export function seriesToForm(series) {
   const s = normalizeSeries(series)
   return {
-    title: s.title,
-    altTitle: s.altTitle || '',
-    synopsis: s.synopsis || '',
-    genres: [...(s.genres || [])],
-    demographic: s.demographic,
-    format: s.format,
-    language: s.language,
-    contentRating: s.contentRating,
-    publicationStatus: s.publicationStatus,
-    publishType: s.publishType,
-    color: s.color,
-    tags: Array.isArray(s.tags) ? s.tags.join(', ') : '',
+    name: s.title || '',
+    description: s.synopsis || '',
+    genre: (s.genres || []).join(', '),
+    target_audience: s.demographic || '',
   }
 }
 
 export function validateSeriesForm(form, existingTitles = [], options = {}) {
   const errors = {}
-  const title = String(form.title ?? '').trim()
+  const name = String(form.name ?? '').trim()
   const excludeTitle = String(options.excludeTitle ?? '').trim().toLowerCase()
-  if (title.length < 2) errors.title = 'Tên series tối thiểu 2 ký tự.'
+  if (name.length < 2) errors.name = 'Tên series tối thiểu 2 ký tự.'
   else if (existingTitles.some((t) => {
     const lower = String(t).toLowerCase()
     if (excludeTitle && lower === excludeTitle) return false
-    return lower === title.toLowerCase()
+    return lower === name.toLowerCase()
   })) {
-    errors.title = 'Đã có series trùng tên.'
+    errors.name = 'Đã có series trùng tên.'
   }
-
-  const synopsis = String(form.synopsis ?? '').trim()
-  if (!synopsis) errors.synopsis = 'Vui lòng nhập tóm tắt.'
-
-  if (!Array.isArray(form.genres) || form.genres.length === 0) {
-    errors.genres = 'Chọn ít nhất một thể loại.'
-  } else if (form.genres.length > 5) {
-    errors.genres = 'Tối đa 5 thể loại.'
-  }
-
-  if (!form.demographic) errors.demographic = 'Chọn đối tượng độc giả.'
-  if (!form.format) errors.format = 'Chọn định dạng truyện.'
-  if (!form.language) errors.language = 'Chọn ngôn ngữ gốc.'
-  if (!form.contentRating) errors.contentRating = 'Chọn phân loại nội dung.'
-  if (!form.publicationStatus) errors.publicationStatus = 'Chọn trạng thái phát hành.'
-
+  if (!String(form.description ?? '').trim()) errors.description = 'Vui lòng nhập mô tả.'
+  if (!String(form.genre ?? '').trim()) errors.genre = 'Vui lòng nhập thể loại.'
+  if (!String(form.target_audience ?? '').trim()) errors.target_audience = 'Vui lòng chọn đối tượng.'
   return { ok: Object.keys(errors).length === 0, errors }
 }
 
 export function buildSeriesFromForm(form, { id, authorName, authorId }) {
-  const title = String(form.title).trim()
-  const publishType = form.publishType === 'continuing' ? 'continuing' : 'debut'
-  const needsFullDebutPipeline = publishType === 'debut'
-  const tags = String(form.tags ?? '')
-    .split(/[,;#]+/)
-    .map((t) => t.trim())
+  const name = String(form.name).trim()
+  const genres = String(form.genre ?? '')
+    .split(/[,;]+/)
+    .map(t => t.trim())
     .filter(Boolean)
-    .slice(0, 8)
 
   const series = normalizeSeries({
     id,
-    slug: slugifySeriesTitle(title),
-    title,
-    altTitle: String(form.altTitle ?? '').trim(),
-    synopsis: String(form.synopsis ?? '').trim(),
-    genres: [...form.genres],
-    demographic: form.demographic,
-    format: form.format,
-    language: form.language,
-    contentRating: form.contentRating,
-    publicationStatus: form.publicationStatus,
-    publishType,
-    needsFullDebutPipeline,
+    slug: slugifySeriesTitle(name),
+    title: name,
+    synopsis: String(form.description ?? '').trim(),
+    genres,
+    demographic: form.target_audience || 'shonen',
+    publicationStatus: 'preparing',
+    publishType: 'debut',
+    needsFullDebutPipeline: true,
     authorName: authorName || 'Mangaka',
     authorId,
     createdAt: new Date().toISOString(),
-    tags,
-    color: form.color ?? SERIES_PALETTE[id % SERIES_PALETTE.length],
     chapters: 0,
     marks: 0,
     status: 'draft',
@@ -293,33 +255,20 @@ export function buildSeriesFromForm(form, { id, authorName, authorId }) {
 /** Cập nhật hồ sơ series — giữ id, tiến độ, chapter, trạng thái workflow. */
 export function applySeriesFormUpdate(existing, form) {
   const base = normalizeSeries(existing)
-  const title = String(form.title).trim()
-  const publishType = form.publishType === 'continuing' ? 'continuing' : 'debut'
-  const needsFullDebutPipeline = publishType === 'debut'
-  const synopsis = String(form.synopsis ?? '').trim()
-  const tags = String(form.tags ?? '')
-    .split(/[,;#]+/)
-    .map((t) => t.trim())
+  const name = String(form.name).trim()
+  const genres = String(form.genre ?? '')
+    .split(/[,;]+/)
+    .map(t => t.trim())
     .filter(Boolean)
-    .slice(0, 8)
 
   const merged = normalizeSeries({
     ...base,
-    slug: slugifySeriesTitle(title),
-    title,
-    altTitle: String(form.altTitle ?? '').trim(),
-    synopsis,
-    genres: [...form.genres],
-    demographic: form.demographic,
-    format: form.format,
-    language: form.language,
-    contentRating: form.contentRating,
-    publicationStatus: form.publicationStatus,
-    publishType,
-    needsFullDebutPipeline,
-    tags,
-    color: form.color ?? base.color,
-    metadataComplete: synopsis.length > 0,
+    slug: slugifySeriesTitle(name),
+    title: name,
+    synopsis: String(form.description ?? '').trim(),
+    genres,
+    demographic: form.target_audience || base.demographic,
+    metadataComplete: Boolean(form.description?.trim()),
     updated: 'Vừa cập nhật hồ sơ',
   })
 

@@ -56,6 +56,23 @@ export function useAssistantTasks({ chapterId, pageId } = {}) {
     return ui
   }, [])
 
+  /**
+   * Flow mới (1 task = 1 chapter): Assistant nộp nhiều ảnh kết quả cho 1 task.
+   * Số lượng ảnh = số trang của chapter.
+   */
+  const submitChapterTask = useCallback(async (taskId, resultFiles) => {
+    const list = Array.isArray(resultFiles) ? resultFiles : [resultFiles]
+    let updated
+    if (list.length > 1) {
+      updated = await tasksService.submitChapter(taskId, list)
+    } else {
+      updated = await tasksService.submit(taskId, list[0])
+    }
+    const ui = apiTaskToUi(updated)
+    setAllTasks(prev => prev.map(t => (t.id === taskId ? ui : t)))
+    return ui
+  }, [])
+
   return {
     allTasks,
     chapterTasks,
@@ -65,5 +82,6 @@ export function useAssistantTasks({ chapterId, pageId } = {}) {
     refresh,
     startTask,
     submitTask,
+    submitChapterTask,
   }
 }

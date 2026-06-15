@@ -63,6 +63,12 @@ export function logout() {
   saveToken(null)
 }
 
+export function updateSession(updates) {
+  const current = getSession()
+  if (!current) return
+  saveSession({ ...current, ...updates })
+}
+
 function normalizeUser(apiUser) {
   if (!apiUser) return null
   return {

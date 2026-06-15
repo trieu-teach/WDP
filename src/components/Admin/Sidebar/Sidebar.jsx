@@ -1,16 +1,12 @@
 import {
-  AlertTriangle,
-  BarChart3,
   BookOpen,
   FileText,
   LayoutDashboard,
   LogOut,
-  MessageSquare,
-  Settings as SettingsIcon,
+  UserCircle,
   Users as UsersIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 
 const NAV_ITEMS = [
@@ -23,18 +19,10 @@ const NAV_ITEMS = [
     ],
   },
   {
-    section: 'Cộng đồng',
+    section: 'Quản lý',
     links: [
-      { id: 'users', label: 'Độc giả', icon: UsersIcon },
-      { id: 'comments', label: 'Bình luận', icon: MessageSquare, badge: 12 },
-      { id: 'reports', label: 'Báo cáo', icon: AlertTriangle, badge: 3, badgeWarning: true },
-    ],
-  },
-  {
-    section: 'Hệ thống',
-    links: [
-      { id: 'stats', label: 'Thống kê', icon: BarChart3 },
-      { id: 'settings', label: 'Cài đặt', icon: SettingsIcon },
+      { id: 'users', label: 'Người dùng', icon: UsersIcon },
+      { id: 'profile', label: 'Hồ sơ', icon: UserCircle },
     ],
   },
 ]
@@ -85,17 +73,6 @@ export default function Sidebar({ activePage = 'dashboard', onNavigate }) {
                   >
                     <Icon className="size-4 shrink-0" />
                     <span className="flex-1 text-left">{link.label}</span>
-                    {link.badge != null ? (
-                      <Badge
-                        variant={link.badgeWarning ? 'destructive' : active ? 'secondary' : 'outline'}
-                        className={cn(
-                          'h-5 px-1.5 text-[10px]',
-                          active && !link.badgeWarning && 'bg-white/20 text-white hover:bg-white/25',
-                        )}
-                      >
-                        {link.badge}
-                      </Badge>
-                    ) : null}
                   </button>
                 )
               })}

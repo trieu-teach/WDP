@@ -39,6 +39,8 @@ import { ASSISTANT_PRODUCTION_STEPS } from '@/constants/assistantProductionLayer
 import { MANGA_PAGE_HEIGHT, MANGA_PAGE_WIDTH } from '@/constants/mangaPageDimensions.js'
 import { noteTaskLabel } from '@/constants/workspaceTasks.js'
 import { ProductionLayerRow } from '@/components/Assistant/ProductionLayerRow.jsx'
+import { CompositeSettingsPanel } from '@/components/Assistant/CompositeSettingsPanel.jsx'
+import { ExportOptionsDialog } from '@/components/Assistant/ExportOptionsDialog.jsx'
 import {
   getBlob,
   paintLayerVersionBlobKey,
@@ -57,6 +59,7 @@ import {
 import { useAssistantAssignments } from '@/hooks/useAssistantAssignments.js'
 import { useAssistantTasks } from '@/hooks/useAssistantTasks.js'
 import { useAssistantCooperation } from '@/hooks/useAssistantCooperation.js'
+import { useNotifications } from '@/hooks/useNotifications.js'
 import { apiNoteToUi } from '@/utils/apiMappers.js'
 import { getApiErrorMessage } from '@/api/http.js'
 import { chaptersService } from '@/api/chapters.service.js'
@@ -139,6 +142,17 @@ function drawFitted(ctx, img, width, height) {
   ctx.drawImage(img, x, y, w, h)
 }
 
+// Blend mode tương thích canvas — cố ý giữ tập con phù hợp manga (shading)
+const LAYER_BLEND_MODES = ['source-over', 'multiply', 'screen', 'overlay', 'lighten', 'darken']
+const BLEND_MODE_LABEL = {
+  'source-over': 'Bình thường',
+  multiply: 'Multiply (đổ bóng)',
+  screen: 'Screen (làm sáng)',
+  overlay: 'Overlay (tăng tương phản)',
+  lighten: 'Lighten (chỉ phần sáng hơn)',
+  darken: 'Darken (chỉ phần tối hơn)',
+}
+
 async function renderComposite({
   baseUrl,
   notes,
@@ -146,6 +160,9 @@ async function renderComposite({
   notesVisible,
   includeBase,
   transparentBg,
+  baseOpacity = 100,
+  onionOpacity = 0,
+  outputMode = 'final', // 'final' | 'lineart' | 'clean' (ảnh phẳng 100% không note)
 }) {
   const W = MANGA_PAGE_WIDTH
   const H = MANGA_PAGE_HEIGHT
@@ -160,20 +177,15 @@ async function renderComposite({
     ctx.fillRect(0, 0, W, H)
   }
 
-  if (includeBase && baseUrl) {
+  // Output 'clean' = ảnh phẳng không có note, không có base, layer 100% opacity
+  const skipBase = outputMode === 'clean' || !includeBase
+  const skipNotes = outputMode === 'clean' || outputMode === 'lineart'
+  const finalOpacity = outputMode === 'clean' ? 100 : null
+
+  if (!skipBase && baseUrl) {
     try {
       const img = await loadImage(baseUrl)
-      drawFitted(ctx, img, W, H)
-    } catch {
-      /* ignore */
-    }
-  }
-
-  for (const layer of sortLayersForStack(paintLayers)) {
-    if (!layer.visible || !layer.dataUrl) continue
-    try {
-      const img = await loadImage(layer.dataUrl)
-      ctx.globalAlpha = Math.max(0, Math.min(1, (layer.opacity ?? 100) / 100))
+      ctx.globalAlpha = Math.max(0, Math.min(1, baseOpacity / 100))
       drawFitted(ctx, img, W, H)
       ctx.globalAlpha = 1
     } catch {
@@ -181,7 +193,32 @@ async function renderComposite({
     }
   }
 
-  if (notesVisible && notes?.length) {
+  for (const layer of sortLayersForStack(paintLayers)) {
+    if (!layer.dataUrl) continue
+    try {
+      const img = await loadImage(layer.dataUrl)
+      const layerOpacity = finalOpacity ?? (layer.visible
+        ? Math.max(0, Math.min(1, (layer.opacity ?? 100) / 100))
+        : 0)
+      const onion = onionOpacity > 0 && !layer.visible
+        ? onionOpacity / 100
+        : 0
+      const finalA = Math.max(layerOpacity, onion)
+      if (finalA <= 0) continue
+      ctx.globalAlpha = finalA
+      const blend = LAYER_BLEND_MODES.includes(layer.blendMode)
+        ? layer.blendMode
+        : 'source-over'
+      ctx.globalCompositeOperation = blend
+      drawFitted(ctx, img, W, H)
+      ctx.globalCompositeOperation = 'source-over'
+      ctx.globalAlpha = 1
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (!skipNotes && notesVisible && notes?.length) {
     notes.forEach((n, idx) => {
       const x = (n.x / 100) * W
       const y = (n.y / 100) * H
@@ -209,7 +246,7 @@ async function renderComposite({
   return canvas.toDataURL('image/png')
 }
 
-function LayerStack({ baseUrl, notes, baseVisible, notesVisible, paintLayers, className }) {
+function LayerStack({ baseUrl, notes, baseVisible, baseOpacity = 100, onionOpacity = 0, notesVisible, paintLayers, className }) {
   return (
     <div
       className={cn(
@@ -218,24 +255,40 @@ function LayerStack({ baseUrl, notes, baseVisible, notesVisible, paintLayers, cl
       )}
     >
       {baseVisible && baseUrl ? (
-        <img src={baseUrl} alt="" className="manga-page__media absolute inset-0 size-full" />
+        <img
+          src={baseUrl}
+          alt=""
+          className="manga-page__media absolute inset-0 size-full"
+          style={{ opacity: Math.max(0, Math.min(1, baseOpacity / 100)) }}
+        />
       ) : (
         <div className="absolute inset-0 flex items-center justify-center bg-zinc-900/80 text-xs text-zinc-500">
           {baseUrl ? 'Layer ảnh gốc đang ẩn' : 'Chưa có ảnh gốc'}
         </div>
       )}
 
-      {sortLayersForStack(paintLayers).map(layer => (
-        layer.visible && layer.dataUrl ? (
+      {sortLayersForStack(paintLayers).map(layer => {
+        if (!layer.dataUrl) return null
+        // Nếu layer đang ẩn và có onion > 0 → vẫn hiển thị mờ theo onion
+        const baseOp = layer.visible
+          ? (layer.opacity ?? 100) / 100
+          : onionOpacity > 0
+            ? onionOpacity / 100
+            : 0
+        if (baseOp <= 0) return null
+        return (
           <img
             key={layer.id}
             src={layer.dataUrl}
             alt={layer.name}
             className="manga-page__media pointer-events-none absolute inset-0 size-full"
-            style={{ opacity: Math.max(0, Math.min(1, (layer.opacity ?? 100) / 100)) }}
+            style={{
+              opacity: baseOp,
+              mixBlendMode: layer.blendMode && layer.blendMode !== 'source-over' ? layer.blendMode : undefined,
+            }}
           />
-        ) : null
-      ))}
+        )
+      })}
 
       {notesVisible && notes?.length ? (
         <div className="pointer-events-none absolute inset-0">
@@ -261,6 +314,21 @@ export default function Assistant() {
   const user = getSession()
 
   const { assignments, loading: assignmentsLoading, refresh: refreshAssignments } = useAssistantAssignments()
+  // Toast khi có notification mới về revision để Assistant biết ngay
+  useNotifications({
+    enabled: Boolean(user),
+    onNew: (n) => {
+      const t = String(n.type ?? '').toLowerCase()
+      if (t === 'revision' || t === 'task' || /yêu cầu.*sửa|chỉnh sửa|revision/i.test(`${n.title ?? ''} ${n.message ?? ''}`)) {
+        toast.warning(`${n.title}${n.message ? ` — ${n.message}` : ''}`, {
+          description: 'Bấm vào chuông để xem chi tiết.',
+          duration: 8000,
+        })
+        void refreshTasks()
+        void refreshAssignments()
+      }
+    },
+  })
   const {
     actionable: cooperationRequests,
     cooperations,
@@ -277,6 +345,10 @@ export default function Assistant() {
   const [baseVisible, setBaseVisible] = useState(true)
   const [notesVisible, setNotesVisible] = useState(true)
   const [paintLayers, setPaintLayers] = useState([])
+  // Composite controls (flow mới cho phép tuỳ chỉnh opacity / onion skin khi preview)
+  const [baseOpacity, setBaseOpacity] = useState(100)
+  const [onionOpacity, setOnionOpacity] = useState(0)
+  const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [layerToReplace, setLayerToReplace] = useState(null)
   const skipNextPersistRef = useRef(false)
@@ -318,6 +390,7 @@ export default function Assistant() {
     refresh: refreshTasks,
     startTask,
     submitTask,
+    submitChapterTask,
   } = useAssistantTasks({
     chapterId: selectedChapterId,
     pageId: currentPage?.id,
@@ -407,12 +480,19 @@ export default function Assistant() {
   }, [paintLayers, layerStorageKey])
 
   const statsDisplayed = useMemo(() => {
-    const pending = allTasks.filter(t => t.status === 'pending').length
-    const progress = allTasks.filter(t => t.status === 'in_progress' || t.status === 'revision').length
-    const review = allTasks.filter(t => t.status === 'submitted').length
-    const approved = allTasks.filter(t => t.status === 'approved').length
+    // Dedup theo chapter để khớp flow mới (1 task = 1 chapter)
+    const byChapter = new Map()
+    for (const t of allTasks) {
+      const k = String(t.chapterId ?? t.id)
+      if (!byChapter.has(k)) byChapter.set(k, t)
+    }
+    const chapterTasks = [...byChapter.values()]
+    const pending = chapterTasks.filter(t => t.status === 'pending').length
+    const progress = chapterTasks.filter(t => t.status === 'in_progress' || t.status === 'revision').length
+    const review = chapterTasks.filter(t => t.status === 'submitted').length
+    const approved = chapterTasks.filter(t => t.status === 'approved').length
     return [
-      { ...STATS[0], value: String(allTasks.length || assignments.length) },
+      { ...STATS[0], value: String(chapterTasks.length || assignments.length) },
       { ...STATS[1], value: String(progress || (selectedChapter ? 1 : 0)) },
       { ...STATS[2], value: String(review) },
       { ...STATS[3], value: String(approved) },
@@ -424,6 +504,21 @@ export default function Assistant() {
     logout()
     navigate('/login')
   }
+
+  const [taskFilter, setTaskFilter] = useState('all') // 'all' | 'revision' | 'pending' | 'in_progress' | 'submitted' | 'approved'
+  const filteredChapters = useMemo(() => {
+    const list = (assignments ?? []).map(a => ({
+      ...a,
+      // Lấy task đại diện (ưu tiên `revision` để gọi sửa)
+      _task: allTasks.find(t => String(t.chapterId) === String(a.chapterId))
+        ?? allTasks.find(t => String(t.id) === String(a.id)),
+    }))
+    if (taskFilter === 'all') return list
+    if (taskFilter === 'needs-attention') {
+      return list.filter(a => a._task?.status === 'revision' || a._task?.status === 'submitted')
+    }
+    return list.filter(a => a._task?.status === taskFilter)
+  }, [assignments, allTasks, taskFilter])
 
   async function handleCooperationAction(req, action) {
     if (!user?.id) return
@@ -465,6 +560,12 @@ export default function Assistant() {
 
   function changeLayerOpacity(layerId, value) {
     setPaintLayers(prev => prev.map(l => (l.id === layerId ? { ...l, opacity: value } : l)))
+  }
+
+  function changeLayerBlend(layerId, blendMode) {
+    setPaintLayers(prev =>
+      prev.map(l => (l.id === layerId ? { ...l, blendMode } : l))
+    )
   }
 
   function moveLayer(layerId, direction) {
@@ -562,20 +663,40 @@ export default function Assistant() {
     toast.success('Đã tải bản phác thảo — chỉnh trong Photoshop / Clip Studio Paint rồi upload từng layer PNG/WebP.')
   }
 
-  async function handleSubmitChapterToMangaka() {
+  async function handleDownloadAllOriginals() {
+    const pages = selectedChapter?.pages ?? []
+    if (!pages.length) return
+    for (let i = 0; i < pages.length; i += 1) {
+      const p = pages[i]
+      if (!p?.url) continue
+      const a = document.createElement('a')
+      a.href = p.url
+      a.download = `${selectedChapter.seriesTitle}-Ch${selectedChapter.chapterNum}-p${i + 1}.png`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      // delay nhỏ để tránh trình duyệt chặn nhiều download cùng lúc
+      await new Promise(r => window.setTimeout(r, 150))
+    }
+    toast.success(`Đã tải ${pages.length} ảnh gốc của chapter.`)
+  }
+
+  /**
+   * Flow mới (1 task = 1 chapter):
+   * - Mỗi chapter chỉ có 1 task duy nhất.
+   * - Assistant xử lý tất cả các trang (vẽ layer, composite), rồi nộp 1 LẦN
+   *   toàn bộ ảnh kết quả trong 1 task.
+   * - `exportPreset` chọn cách render ảnh cuối (default/final, line art, clean).
+   * - Tương thích ngược: nếu chapter vẫn có nhiều task cũ thì vẫn submit theo từng task.
+   */
+  async function handleSubmitChapterToMangaka(exportPreset = null) {
     if (!selectedChapter) return
     if (!chapterTasks.length) {
-      toast.error('Chapter chưa có task ghi chú — Mangaka có thể gửi chapter không kèm ghi chú; khi có ghi chú mới nộp được.')
+      toast.error('Chưa có task cho chapter này — chờ Mangaka gửi.')
       return
     }
     if (chapterAllSubmitted) {
       toast.message('Chapter này đã nộp cho Mangaka.')
-      return
-    }
-    const partialSubmitted = chapterTasks.some(t => t.status === 'submitted')
-      && chapterActionableTasks.length > 0
-    if (partialSubmitted) {
-      toast.error('Chapter đang nộp dở — liên hệ Mangaka nếu cần gửi lại.')
       return
     }
     if (!chapterActionableTasks.length) {
@@ -584,65 +705,89 @@ export default function Assistant() {
     }
 
     const pages = selectedChapter.pages ?? []
-    const pageIds = [...new Set(chapterActionableTasks.map(t => String(t.pageId)))]
-    const submissions = []
+    const outputMode = exportPreset?.values?.outputMode ?? 'final'
+    const includeBase = exportPreset?.values?.includeBase ?? true
+    const baseOpacityPreset = exportPreset?.values?.baseOpacity ?? 100
+    const notesVisiblePreset = exportPreset?.values?.notesVisible ?? false
 
     setBusy(true)
     try {
-      for (const pageId of pageIds) {
-        const page = pages.find(p => String(p.id) === pageId)
-        if (!page?.url) {
-          toast.error('Không tìm thấy ảnh trang — tải lại chapter.')
-          return
-        }
+      // Build 1 ảnh kết quả / trang theo export preset
+      const submissionFiles = []
+      for (const page of pages) {
+        if (!page?.url) continue
         const storageKey = `${selectedChapter.chapterId}-${page.id}`
         const layers = await loadAssistantPaintLayers(storageKey)
-        const hasImage = layers.some(l => l.visible && l.dataUrl)
+        // 'clean' yêu cầu render dù layer ẩn vẫn tính
+        const hasImage = layers.some(l => l.dataUrl)
         if (!hasImage) {
-          const idx = pages.findIndex(p => String(p.id) === pageId)
-          toast.error(`Trang ${idx + 1} chưa có layer — hoàn thành tất cả trang trước khi gửi chapter.`)
+          const idx = pages.findIndex(p => String(p.id) === page.id)
+          toast.error(`Trang ${idx + 1} chưa có layer — hoàn thành tất cả trang trước khi gửi.`)
           return
         }
         const compositeDataUrl = await renderComposite({
           baseUrl: page.url,
           notes: [],
           paintLayers: layers,
-          notesVisible: false,
-          includeBase: true,
+          notesVisible: notesVisiblePreset,
+          includeBase,
           transparentBg: false,
+          baseOpacity: baseOpacityPreset,
+          onionOpacity: 0,
+          outputMode,
         })
-        if (!compositeDataUrl) {
-          toast.error(`Không tạo được ảnh trang ${pages.findIndex(p => String(p.id) === pageId) + 1}.`)
-          return
-        }
-        submissions.push({
-          pageId,
+        if (!compositeDataUrl) continue
+        const idx = pages.findIndex(p => String(p.id) === page.id)
+        submissionFiles.push({
           file: await dataUrlToFile(
             compositeDataUrl,
-            `${selectedChapter.seriesTitle}-Ch${selectedChapter.chapterNum}-p${pages.findIndex(p => String(p.id) === pageId) + 1}.png`,
+            `${selectedChapter.seriesTitle}-Ch${selectedChapter.chapterNum}-p${idx + 1}.png`,
           ),
-          tasks: chapterActionableTasks.filter(t => String(t.pageId) === pageId),
         })
       }
 
-      for (const { file, tasks } of submissions) {
-        for (const task of tasks) {
-          if (task.status === 'pending' || task.status === 'revision') {
-            await startTask(task.id)
-          }
-          await submitTask(task.id, file)
-        }
+      if (!submissionFiles.length) {
+        toast.error('Không có trang nào có layer để nộp.')
+        return
       }
 
-      toast.success(
-        `Đã nộp chapter ${selectedChapter.chapterNum} — ${submissions.length} trang (${chapterActionableTasks.length} task) cho Mangaka.`,
-      )
+      // Ưu tiên: dùng `submitChapterTask` (1 task = N ảnh)
+      const chapterTask = chapterActionableTasks[0]
+      if (chapterActionableTasks.length === 1 && chapterTask) {
+        if (chapterTask.status === 'pending' || chapterTask.status === 'revision') {
+          await startTask(chapterTask.id)
+        }
+        await submitChapterTask(chapterTask.id, submissionFiles.map(s => s.file))
+        toast.success(
+          `Đã nộp chapter ${selectedChapter.chapterNum} (${submissionFiles.length} trang, kiểu "${exportPreset?.label ?? 'Ảnh cuối'}") cho Mangaka.`,
+        )
+      } else {
+        // Fallback tương thích: nộp theo từng page/task (flow cũ)
+        const pageIds = [...new Set(chapterActionableTasks.map(t => String(t.pageId)))]
+        for (const pageId of pageIds) {
+          const idx = pages.findIndex(p => String(p.id) === pageId)
+          const file = submissionFiles[idx]?.file
+          if (!file) continue
+          const tasks = chapterActionableTasks.filter(t => String(t.pageId) === pageId)
+          for (const task of tasks) {
+            if (task.status === 'pending' || task.status === 'revision') {
+              await startTask(task.id)
+            }
+            await submitTask(task.id, file)
+          }
+        }
+        toast.success(
+          `Đã nộp chapter ${selectedChapter.chapterNum} — ${submissionFiles.length} trang (${chapterActionableTasks.length} task, kiểu "${exportPreset?.label ?? 'Ảnh cuối'}") cho Mangaka.`,
+        )
+      }
+
       await refreshTasks()
       void refreshAssignments()
     } catch (err) {
       toast.error(getApiErrorMessage(err, 'Nộp chapter thất bại — thử lại.'))
     } finally {
       setBusy(false)
+      setExportDialogOpen(false)
     }
   }
 
@@ -807,6 +952,30 @@ export default function Assistant() {
             <CardHeader className="border-b p-4">
               <CardTitle className="text-base">Chapter được giao</CardTitle>
               <CardDescription>1 chapter = 1 Assistant · bấm vào để xem các trang</CardDescription>
+              <div className="-mb-1 mt-1 flex flex-wrap gap-1 pt-2">
+                {[
+                  { id: 'all', label: 'Tất cả' },
+                  { id: 'needs-attention', label: 'Cần xử lý' },
+                  { id: 'revision', label: 'Cần sửa' },
+                  { id: 'submitted', label: 'Chờ duyệt' },
+                  { id: 'in_progress', label: 'Đang làm' },
+                  { id: 'pending', label: 'Chờ nhận' },
+                ].map(f => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setTaskFilter(f.id)}
+                    className={cn(
+                      'rounded-full px-2.5 py-0.5 text-[10px] font-medium transition-colors',
+                      taskFilter === f.id
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-muted text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
             </CardHeader>
             {assignmentsLoading ? (
               <div className="p-6 text-center text-xs text-muted-foreground">Đang tải việc được giao...</div>
@@ -817,7 +986,7 @@ export default function Assistant() {
             ) : (
               <ScrollArea className="max-h-[calc(100vh-220px)]">
                 <ul className="divide-y">
-                  {assignments.map(ch => {
+                  {filteredChapters.map(ch => {
                     const badge = STATUS_BADGE[ch.status] ?? STATUS_BADGE.pending_assistant
                     const cover = ch.pages?.find(p => p.url) ?? ch.pages?.[0]
                     const pageCount = ch.pageCount ?? ch.pages?.length ?? 0
@@ -906,6 +1075,8 @@ export default function Assistant() {
                       baseUrl={selected.mangakaImageUrl}
                       notes={selected.notes}
                       baseVisible={baseVisible}
+                      baseOpacity={baseOpacity}
+                      onionOpacity={onionOpacity}
                       notesVisible={notesVisible}
                       paintLayers={paintLayers}
                       className="w-full max-w-[640px]"
@@ -983,26 +1154,78 @@ export default function Assistant() {
               </CardContent>
             </Card>
 
-            {selected && pageTasks.length > 0 ? (
+            {selected && chapterTasks.length > 0 ? (
               <Card className="border-sky-200 dark:border-sky-500/20">
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-base">Task trên trang này</CardTitle>
+                  <CardTitle className="text-base">Mô tả từ Mangaka</CardTitle>
                   <CardDescription className="text-xs">
-                    {tasksLoading ? 'Đang tải...' : `${pageTasks.length} task từ Mangaka`}
+                    {tasksLoading
+                      ? 'Đang tải...'
+                      : `1 task = cả chapter · ${selectedChapter?.pages?.length ?? 0} trang`}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  {pageTasks.map(task => (
-                    <div key={task.id} className="rounded-md border p-2.5 text-xs">
-                      <div className="flex items-center justify-between gap-2">
-                        <Badge variant="outline">{noteTaskLabel(task.workType === 'effects' ? 'fx' : task.workType)}</Badge>
-                        <span className="text-muted-foreground">{TASK_STATUS_LABEL[task.status] ?? task.status}</span>
+                  {chapterTasks.map(task => {
+                    const isRevision = task.status === 'revision'
+                    return (
+                      <div
+                        key={task.id}
+                        className={cn(
+                          'rounded-md border p-2.5 text-xs',
+                          isRevision
+                            ? 'border-amber-300 bg-amber-50/60 dark:border-amber-500/30 dark:bg-amber-500/5'
+                            : 'bg-card',
+                        )}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium text-foreground">
+                            {TASK_STATUS_LABEL[task.status] ?? task.status}
+                          </span>
+                          {isRevision ? (
+                            <Badge className="bg-amber-500 text-white hover:bg-amber-500">
+                              Cần sửa
+                            </Badge>
+                          ) : null}
+                        </div>
+                        {task.description ? (
+                          <p className="mt-1 whitespace-pre-line text-foreground/80">
+                            {task.description}
+                          </p>
+                        ) : (
+                          <p className="mt-1 text-muted-foreground">
+                            (Mangaka không kèm mô tả — bạn xem ảnh + layer note trên từng trang.)
+                          </p>
+                        )}
+                        {isRevision && task.revisionNote ? (
+                          <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 dark:border-amber-500/30 dark:bg-amber-500/10">
+                            <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+                              Yêu cầu chỉnh sửa gần nhất
+                            </p>
+                            <p className="mt-0.5 text-foreground/80">{task.revisionNote}</p>
+                          </div>
+                        ) : null}
+                        {task.revisionHistory?.length > 1 ? (
+                          <details className="mt-2 text-muted-foreground">
+                            <summary className="cursor-pointer text-[10px] hover:text-foreground">
+                              Lịch sử yêu cầu sửa ({task.revisionHistory.length} lần)
+                            </summary>
+                            <ol className="mt-1 space-y-1 pl-3">
+                              {task.revisionHistory.map((h, i) => (
+                                <li key={i} className="list-decimal">
+                                  <span className="text-foreground/80">{h.note}</span>
+                                  {h.at ? (
+                                    <span className="ml-1 text-[10px]">
+                                      · {new Date(h.at).toLocaleString('vi-VN')}
+                                    </span>
+                                  ) : null}
+                                </li>
+                              ))}
+                            </ol>
+                          </details>
+                        ) : null}
                       </div>
-                      {task.description ? (
-                        <p className="mt-1 line-clamp-2 text-muted-foreground">{task.description}</p>
-                      ) : null}
-                    </div>
-                  ))}
+                    )
+                  })}
                 </CardContent>
               </Card>
             ) : null}
@@ -1093,6 +1316,7 @@ export default function Assistant() {
                             step={step}
                             onToggle={toggleLayerVisible}
                             onChangeOpacity={changeLayerOpacity}
+                            onChangeBlend={changeLayerBlend}
                             onPickFile={pickReplaceFile}
                             onDownload={handleDownloadLayer}
                             onMoveUp={id => moveLayer(id, 'up')}
@@ -1109,11 +1333,22 @@ export default function Assistant() {
               </CardContent>
             </Card>
 
+            <CompositeSettingsPanel
+              baseVisible={baseVisible}
+              onToggleBase={() => setBaseVisible(v => !v)}
+              baseOpacity={baseOpacity}
+              onChangeBaseOpacity={setBaseOpacity}
+              notesVisible={notesVisible}
+              onToggleNotes={() => setNotesVisible(v => !v)}
+              onionOpacity={onionOpacity}
+              onChangeOnionOpacity={setOnionOpacity}
+            />
+
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Nộp chapter cho Mangaka</CardTitle>
                 <CardDescription className="text-xs">
-                  Hoàn thành layer trên <strong>mọi trang có task</strong>, rồi gửi một lần — chỉ ảnh, không kèm ghi chú.
+                  Hoàn thành layer trên <strong>mọi trang</strong>, rồi gửi một lần cả chapter — 1 task = 1 chapter.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-2">
@@ -1126,10 +1361,20 @@ export default function Assistant() {
                   <ArrowDownToLine className="size-4" />
                   Tải ảnh gốc trang hiện tại
                 </Button>
+                {selectedChapter && (selectedChapter.pages ?? []).length > 1 ? (
+                  <Button
+                    variant="ghost"
+                    className="w-full"
+                    onClick={() => void handleDownloadAllOriginals()}
+                  >
+                    <ArrowDownToLine className="size-3.5" />
+                    Tải tất cả ảnh gốc của chapter ({(selectedChapter.pages ?? []).length} trang)
+                  </Button>
+                ) : null}
                 {selectedChapter && chapterTasks.length > 0 ? (
                   <p className="text-xs text-muted-foreground">
-                    {chapterActionableTasks.length} task còn lại ·{' '}
-                    {[...new Set(chapterActionableTasks.map(t => String(t.pageId)))].length} trang cần ảnh
+                    1 task cho cả chapter ·{' '}
+                    {(selectedChapter.pages ?? []).length} trang
                     {chapterAllSubmitted ? ' · đã nộp' : ''}
                   </p>
                 ) : null}
@@ -1141,14 +1386,14 @@ export default function Assistant() {
                     || !chapterActionableTasks.length
                     || chapterAllSubmitted
                   }
-                  onClick={() => void handleSubmitChapterToMangaka()}
+                  onClick={() => setExportDialogOpen(true)}
                 >
                   <Send className="size-4" />
                   Gửi cả chapter cho Mangaka
                 </Button>
                 {selectedChapter && !chapterTasks.length ? (
                   <p className="text-[10px] text-muted-foreground">
-                    Chapter chưa có ghi chú (task) — vẫn xem và làm trang; Mangaka có thể thêm ghi chú sau.
+                    Chưa có task — chờ Mangaka gửi chapter cho bạn.
                   </p>
                 ) : null}
                 {selectedChapter && chapterActionableTasks.length > 0 ? (
@@ -1226,6 +1471,14 @@ export default function Assistant() {
       </main>
 
       <Footer />
+
+      <ExportOptionsDialog
+        open={exportDialogOpen}
+        onOpenChange={setExportDialogOpen}
+        busy={busy}
+        pageCount={(selectedChapter?.pages ?? []).length}
+        onConfirm={(preset) => handleSubmitChapterToMangaka(preset)}
+      />
     </div>
   )
 }

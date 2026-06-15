@@ -65,13 +65,11 @@ export function apiSeriesToUi(raw, index = 0) {
 }
 
 export function uiSeriesFormToApi(form) {
-  const genres = Array.isArray(form.genres) ? form.genres : []
   return {
-    name: String(form.title ?? '').trim(),
-    synopsis: String(form.synopsis ?? '').trim(),
-    description: String(form.synopsis ?? '').trim(),
-    genre: genres.join(', '),
-    target_audience: form.demographic ?? 'shonen',
+    name: String(form.name ?? '').trim(),
+    description: String(form.description ?? '').trim(),
+    genre: String(form.genre ?? '').trim(),
+    target_audience: String(form.target_audience ?? '').trim(),
   }
 }
 
@@ -245,6 +243,23 @@ export function uiNoteToTaskCreate(note, { pageId, assignedTo, price }) {
   }
 }
 
+/**
+ * Tạo 1 task duy nhất cho cả chapter (flow mới: 1 task = 1 chapter).
+ * TODO backend: cập nhật `POST /tasks` để nhận `chapter_id` thay vì bắt buộc `page_id` + `region`.
+ * Hiện tại gửi kèm page_id của trang đầu + region toàn ảnh làm fallback tạm thời.
+ */
+export function uiChapterToTaskCreate({ chapterId, pageId, assignedTo, description, price }) {
+  return {
+    chapter_id: chapterId,
+    page_id: pageId,
+    assigned_to: assignedTo,
+    work_type: 'other',
+    region: { x: 0, y: 0, width: 100, height: 100 },
+    description: description ?? '',
+    ...(price != null ? { price } : {}),
+  }
+}
+
 export function apiTaskToUi(raw) {
   const t = raw ?? {}
   return {
@@ -257,8 +272,29 @@ export function apiTaskToUi(raw) {
     region: t.region ?? null,
     description: t.description ?? '',
     revisionNote: t.revision_note ?? '',
+    /**
+     * Lịch sử các lần Mangaka yêu cầu chỉnh sửa.
+     * TODO backend: BE nên trả về `revision_history: [{ at, by, note, request_revision_count }]`
+     * để hiển thị timeline. Tạm thời fallback về mảng 1 phần tử từ `revision_note`.
+     */
+    revisionHistory: Array.isArray(t.revision_history)
+      ? t.revision_history.map((r) => ({
+          at: r.at ?? r.createdAt ?? r.updatedAt ?? null,
+          by: r.by ?? r.requested_by ?? null,
+          note: r.note ?? r.revision_note ?? '',
+        }))
+      : t.revision_note
+        ? [{ at: t.updatedAt ?? t.createdAt ?? null, by: t.assigned_by ?? null, note: t.revision_note }]
+        : [],
     status: t.status ?? 'pending',
     resultImageUrl: resolveMediaUrl(t.result_image_url ?? null),
+    /**
+     * Flow mới (1 task = 1 chapter): backend có thể trả về mảng URL
+     * nhiều trang kết quả trong `result_image_urls` hoặc zip trong `result_archive_url`.
+     */
+    resultImageUrls: Array.isArray(t.result_image_urls)
+      ? t.result_image_urls.map(resolveMediaUrl)
+      : [],
     price: t.price ?? null,
     createdAt: t.createdAt ?? t.created_at,
     updatedAt: t.updatedAt ?? t.updated_at,

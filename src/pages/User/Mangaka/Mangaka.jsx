@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, Fragment } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
@@ -14,6 +14,7 @@ import {
   ListChecks,
   PenSquare,
   Plus,
+  Send,
   Sparkles,
   Trash2,
   TrendingUp,
@@ -51,6 +52,8 @@ import ChapterAnnotator from "./ChapterAnnotator.jsx";
 import AddSeriesModal from "./AddSeriesModal.jsx";
 import MangakaAssistants from "./MangakaAssistants.jsx";
 import { seriesPath } from "./SeriesUploadDetail.jsx";
+import { ImageCompareGrid } from "@/components/layout/ImageCompareGrid.jsx";
+import { ChapterPipeline } from "@/components/layout/ChapterPipeline.jsx";
 import {
   LABEL_EDITOR_BOARD,
   LABEL_TANTOU_EDITOR,
@@ -120,11 +123,11 @@ const STATUS_BADGE = {
 };
 
 const PIPELINE_DEBUT_STEPS = [
-  { step: 1, title: "Mangaka → Assistant", desc: "Gửi bản thảo & ô ghi chú" },
+  { step: 1, title: "Mangaka → Assistant", desc: "Gửi ảnh + ghi chú gộp → 1 task = 1 chapter" },
   {
     step: 2,
     title: "Assistant → Mangaka",
-    desc: "Nhận bản vẽ, bạn duyệt / yêu cầu sửa",
+    desc: "Nộp ảnh kết quả cả chapter, bạn duyệt / yêu cầu sửa",
   },
   {
     step: 3,
@@ -498,15 +501,35 @@ export default function Mangaka() {
   const pendingReview = pendingReviews[0] ?? null;
   const pendingCompositeReview = pendingReview?.chapter ?? null;
   const pendingSubmittedTasks = pendingReview?.tasks ?? [];
-  const pendingPageResults = useMemo(() => {
-    const map = new Map();
+  // Flow mới (1 task = 1 chapter): gom ảnh từ resultImageUrls (mảng) hoặc resultImageUrl (1 ảnh)
+  const pendingResultUrls = useMemo(() => {
+    const urls = []
     for (const task of pendingSubmittedTasks) {
-      if (task.pageId && task.resultImageUrl) {
-        map.set(String(task.pageId), task.resultImageUrl);
+      if (Array.isArray(task.resultImageUrls) && task.resultImageUrls.length) {
+        urls.push(...task.resultImageUrls)
+      } else if (task.resultImageUrl) {
+        urls.push(task.resultImageUrl)
       }
     }
-    return [...map.values()];
+    return urls
   }, [pendingSubmittedTasks]);
+  const pendingChapterTask = pendingReview?.task ?? null;
+  // Ảnh gốc các trang của chapter đang duyệt (fallback nếu BE không trả diff)
+  const pendingOriginalUrls = useMemo(() => {
+    if (!pendingCompositeReview) return []
+    const list = (annotatorChapters ?? []).find(
+      c => c.id === pendingCompositeReview.id,
+    )
+    return (list?.pages ?? []).map(p => p?.url).filter(Boolean)
+  }, [pendingCompositeReview, annotatorChapters])
+
+  // Chapter vừa duyệt xong — dùng để nhắc gửi Tantou
+  const [lastApprovedChapter, setLastApprovedChapter] = useState(null)
+  useEffect(() => {
+    if (!lastApprovedChapter) return
+    const t = window.setTimeout(() => setLastApprovedChapter(null), 60_000)
+    return () => window.clearTimeout(t)
+  }, [lastApprovedChapter])
 
   const seriesRankings = useMemo(() => {
     const titles = new Set(seriesList.map((s) => s.title));
@@ -542,18 +565,12 @@ export default function Mangaka() {
     ],
   );
 
-  function noteMatchesTaskRegion(note, task) {
-    const r = task.region ?? {};
-    const w = r.width ?? r.w ?? 0;
-    const h = r.height ?? r.h ?? 0;
-    return (
-      Math.abs(Number(r.x ?? 0) - Number(note.x ?? 0)) < 1
-      && Math.abs(Number(r.y ?? 0) - Number(note.y ?? 0)) < 1
-      && Math.abs(Number(w) - Number(note.w ?? 0)) < 1
-      && Math.abs(Number(h) - Number(note.h ?? 0)) < 1
-    );
-  }
-
+  /**
+   * Flow mới (1 task = 1 chapter): tạo DUY NHẤT 1 task cho cả chapter.
+   * Tất cả ghi chú trên các trang được gộp thành `description` để Assistant nắm ngữ cảnh.
+   * TODO backend: BE cần chấp nhận `chapter_id` (không bắt buộc `page_id`+`region`) để tạo task chapter.
+   * Tạm thời fallback: gửi page_id của trang đầu + region toàn ảnh, BE vẫn nhận như task cũ.
+   */
   async function handleSendToAssistant({
     chapter,
     pages,
@@ -576,7 +593,8 @@ export default function Mangaka() {
       : null;
 
     try {
-      const notesToCreate = [];
+      // Gom tất cả note trên các trang thành 1 mô tả duy nhất
+      const allNotes = [];
       for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
         const page = pages[pageIndex];
         if (!page?.id) continue;
@@ -585,75 +603,57 @@ export default function Mangaka() {
           ? annotatorNotes[pageKey]
           : await loadPageNotes(page.id, pageKey);
         for (const note of pageNotes) {
-          notesToCreate.push({ page, note });
+          allNotes.push({ pageNum: pageIndex + 1, note });
         }
       }
 
-      if (
-        currentAssistantId
-        && currentAssistantId !== targetAssistantId
-      ) {
-        await unassignChapter(chapter.id);
-      }
+      const summary = allNotes.length
+        ? allNotes
+            .map(({ pageNum, note }) => {
+              const taskLabel = note.taskType ? `[${note.taskType}] ` : ''
+              const text = String(note.text ?? '').trim()
+              return `Trang ${pageNum}: ${taskLabel}${text || 'Cần xử lý.'}`
+            })
+            .join('\n')
+        : `Xử lý toàn bộ chapter ${chapter.num} (${pages.length} trang).`
 
+      // Đảm bảo chapter đã gán assistant
       if (!currentAssistantId || currentAssistantId !== targetAssistantId) {
         try {
           await assignChapter(chapter.id, targetAssistantId);
         } catch (err) {
           const status = err?.response?.status;
-          const message = String(err?.response?.data?.message ?? "");
-          const alreadyAssigned = status === 400
-            && /assistant|đã có/i.test(message);
+          const message = String(err?.response?.data?.message ?? '');
+          const alreadyAssigned = status === 400 && /assistant|đã có/i.test(message)
           if (alreadyAssigned) {
-            await chaptersService.unassignAssistant(chapter.id).catch(() => null);
-            await assignChapter(chapter.id, targetAssistantId);
+            await chaptersService.unassignAssistant(chapter.id).catch(() => null)
+            await assignChapter(chapter.id, targetAssistantId)
           } else if (status !== 409) {
-            throw err;
+            throw err
           }
         }
       }
 
-      const existingRaw = await tasksService.getByChapter(chapter.id).catch(() => []);
-      const existingTasks = (Array.isArray(existingRaw) ? existingRaw : []).map(apiTaskToUi);
-      let newTaskCount = 0;
+      // Tạo DUY NHẤT 1 task cho cả chapter
+      const firstPage = pages.find(p => p?.id) ?? null
+      await tasksService.create(
+        uiChapterToTaskCreate({
+          chapterId: chapter.id,
+          pageId: firstPage?.id,
+          assignedTo: targetAssistantId,
+          description: summary,
+        }),
+      )
 
-      for (const { page, note } of notesToCreate) {
-        const duplicate = existingTasks.some(
-          (t) =>
-            String(t.pageId) === String(page.id)
-            && ["pending", "in_progress", "revision", "submitted"].includes(t.status)
-            && noteMatchesTaskRegion(note, t),
-        );
-        if (duplicate) continue;
+      await updateChapterStatus(chapter.id, 'assistant')
+      await refreshMangakaTasks()
+      await refreshWorkspace()
 
-        await tasksService.create(
-          uiNoteToTaskCreate(note, {
-            pageId: page.id,
-            assignedTo: targetAssistantId,
-          }),
-        );
-        newTaskCount += 1;
-      }
-
-      await updateChapterStatus(chapter.id, "assistant");
-      await refreshMangakaTasks();
-      await refreshWorkspace();
-
-      if (notesToCreate.length === 0) {
-        toast.success(
-          `Đã gửi chapter ${chapter.num} — ${pages.length} trang cho Assistant (trang không có ghi chú vẫn gửi được).`,
-        );
-      } else if (newTaskCount === 0) {
-        toast.success(
-          `Đã gửi lại chapter ${chapter.num} — ${pages.length} trang (${notesToCreate.length} ghi chú, task đã có sẵn).`,
-        );
-      } else {
-        toast.success(
-          `Đã gửi chapter ${chapter.num} — ${pages.length} trang, ${newTaskCount} ghi chú mới cho Assistant.`,
-        );
-      }
+      toast.success(
+        `Đã gửi chapter ${chapter.num} (${pages.length} trang) cho Assistant — tổng ${allNotes.length} ghi chú.`,
+      )
     } catch (err) {
-      toast.error(getApiErrorMessage(err, "Gửi chapter cho Assistant thất bại."));
+      toast.error(getApiErrorMessage(err, 'Gửi chapter cho Assistant thất bại.'))
     }
   }
 
@@ -708,12 +708,16 @@ export default function Mangaka() {
   }
 
   async function handleApproveChapter() {
-    if (!pendingReview?.tasks?.length) return;
+    if (!pendingReview?.chapter) return;
+    const tasks = pendingReview.task ? [pendingReview.task] : (pendingReview.tasks ?? [])
+    if (!tasks.length) return;
     try {
-      await approveChapterTasks(pendingReview.tasks);
+      await approveChapterTasks(tasks);
       await updateChapterStatus(pendingReview.chapter.id, "done");
+      const approvedChapter = pendingReview.chapter;
+      setLastApprovedChapter(approvedChapter);
       toast.success(
-        `Đã phê duyệt chapter ${pendingReview.chapter.num} — ${pendingReview.chapter.series}.`,
+        `Đã phê duyệt chapter ${approvedChapter.num} — ${approvedChapter.series}.`,
       );
       await refreshMangakaTasks();
       await refreshWorkspace();
@@ -723,13 +727,15 @@ export default function Mangaka() {
   }
 
   async function handleConfirmChapterRevision() {
-    if (!pendingReview?.tasks?.length || !pendingReview.chapter) return;
+    if (!pendingReview?.chapter) return;
+    const tasks = pendingReview.task ? [pendingReview.task] : (pendingReview.tasks ?? [])
+    if (!tasks.length) return;
     setRevisionBusy(true);
     try {
       const note =
         revisionNote.trim()
         || "Mangaka yêu cầu chỉnh sửa — xem ghi chú trên từng trang.";
-      await requestRevision(pendingReview.tasks, note);
+      await requestRevision(tasks, note);
       await updateChapterStatus(pendingReview.chapter.id, "assistant");
       setRevisionOpen(false);
       setRevisionNote("");
@@ -880,7 +886,7 @@ export default function Mangaka() {
 
   async function confirmAddSeries(form, meta) {
     try {
-      const newSeries = await createSeries(form, meta?.coverFile ?? null);
+      const newSeries = await createSeries(form);
       setAnnotateSeries(newSeries.title);
       closeAddSeriesModal();
       navigate(seriesPath(newSeries));
@@ -1132,8 +1138,8 @@ export default function Mangaka() {
                                 const statusBadge =
                                   STATUS_BADGE[c.status] ?? STATUS_BADGE.draft;
                                 return (
+                                  <Fragment key={c.id}>
                                   <Link
-                                    key={c.id}
                                     to={`/mangaka/series/${slug}/chapter/${c.id}`}
                                     className="flex items-center gap-3 px-5 py-3 text-sm transition-colors hover:bg-muted/30"
                                   >
@@ -1173,6 +1179,8 @@ export default function Mangaka() {
                                     </span>
                                     <ChevronRight className="size-3.5 text-muted-foreground" />
                                   </Link>
+                                  <ChapterPipeline status={c.status} className="px-5 pb-3 pt-1" />
+                                  </Fragment>
                                 );
                               })}
                             </div>
@@ -1310,17 +1318,11 @@ export default function Mangaka() {
                   </Badge>
 
                   <div className="overflow-hidden rounded-lg border bg-muted">
-                    {pendingPageResults.length > 0 ? (
-                      <div className="divide-y">
-                        {pendingPageResults.map((url, i) => (
-                          <img
-                            key={url}
-                            src={url}
-                            alt={`Trang ${i + 1} từ Assistant`}
-                            className="w-full"
-                          />
-                        ))}
-                      </div>
+                    {pendingResultUrls.length > 0 ? (
+                      <ImageCompareGrid
+                        originals={pendingOriginalUrls}
+                        results={pendingResultUrls}
+                      />
                     ) : (
                       <div className="flex flex-col items-center justify-center gap-1 p-6 text-center text-xs text-muted-foreground">
                         <ImageIcon className="size-6 opacity-40" />
@@ -1335,8 +1337,34 @@ export default function Mangaka() {
 
                   {pendingSubmittedTasks.length > 0 ? (
                     <p className="text-xs text-muted-foreground">
-                      {pendingPageResults.length} trang · {pendingSubmittedTasks.length} task đã nộp
+                      {pendingResultUrls.length} trang kết quả · 1 task = 1 chapter
+                      {pendingChapterTask?.revisionNote
+                        ? ` · yêu cầu sửa trước: "${pendingChapterTask.revisionNote}"`
+                        : ''}
                     </p>
+                  ) : null}
+
+                  {pendingChapterTask?.revisionHistory?.length ? (
+                    <div className="rounded-lg border border-amber-200/70 bg-amber-50/40 p-3 text-xs dark:border-amber-500/20 dark:bg-amber-500/5">
+                      <p className="mb-1.5 font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+                        Lịch sử yêu cầu sửa · {pendingChapterTask.revisionHistory.length} lần
+                      </p>
+                      <ol className="space-y-1.5">
+                        {pendingChapterTask.revisionHistory.map((h, i) => (
+                          <li key={i} className="flex items-start gap-2 text-foreground/80">
+                            <span className="mt-0.5 size-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden />
+                            <div className="min-w-0 flex-1">
+                              <p className="break-words">{h.note || '(không có ghi chú)'}</p>
+                              {h.at ? (
+                                <p className="text-[10px] text-muted-foreground">
+                                  {new Date(h.at).toLocaleString('vi-VN')}
+                                </p>
+                              ) : null}
+                            </div>
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
                   ) : null}
 
                   <div className="flex gap-2">
@@ -1368,6 +1396,44 @@ export default function Mangaka() {
                     Mở trên trang
                     <ArrowRight className="size-3.5" />
                   </Button>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {lastApprovedChapter ? (
+              <Card className="border-emerald-200 bg-emerald-50/50 shadow-sm dark:border-emerald-500/30 dark:bg-emerald-500/5">
+                <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+                  <div className="min-w-0 space-y-0.5">
+                    <p className="flex items-center gap-1.5 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+                      <CheckCircle2 className="size-4" />
+                      Đã duyệt chapter {lastApprovedChapter.num} — {lastApprovedChapter.series}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Gửi sang {LABEL_TANTOU_EDITOR} để hoàn tất pipeline.
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setLastApprovedChapter(null)}
+                    >
+                      Để sau
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        handleSendToTantou({
+                          chapter: lastApprovedChapter,
+                          pageIndex: 0,
+                        })
+                        setLastApprovedChapter(null)
+                      }}
+                    >
+                      <Send className="size-3.5" />
+                      Gửi {LABEL_TANTOU_EDITOR} ngay
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
             ) : null}

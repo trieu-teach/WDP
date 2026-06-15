@@ -34,9 +34,14 @@ export function useMangakaTasks(chapterRows) {
                 const raw = await tasksService.getByChapter(row.id)
                 const tasks = (Array.isArray(raw) ? raw : []).map(apiTaskToUi)
                 if (tasks.length === 0) return
-                const allSubmitted = tasks.every(t => t.status === 'submitted')
-                if (allSubmitted) {
-                  items.push({ chapter: row, tasks })
+                /**
+                 * Flow mới: 1 chapter = 1 task. Lấy task có status `submitted`
+                 * (hoặc tất cả task ở `submitted` nếu BE vẫn trả theo ô note).
+                 */
+                const submittedTask = tasks.find(t => t.status === 'submitted')
+                  ?? (tasks.every(t => t.status === 'submitted') ? tasks[0] : null)
+                if (submittedTask) {
+                  items.push({ chapter: row, task: submittedTask, tasks })
                 }
               } catch {
                 /* chapter chưa có task */

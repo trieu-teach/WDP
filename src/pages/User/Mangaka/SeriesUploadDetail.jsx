@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
+  ChevronLeft,
   ChevronRight,
   FileImage,
   ImageIcon,
@@ -102,6 +103,7 @@ export default function SeriesUploadDetail() {
   const [annotatorChapters, setAnnotatorChapters] = useState([])
   const [loading, setLoading] = useState(true)
   const [editSeriesOpen, setEditSeriesOpen] = useState(false)
+  const [pageStart, setPageStart] = useState(0)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -160,6 +162,8 @@ export default function SeriesUploadDetail() {
     if (!activeRow) return null
     return annotatorChapters.find(ch => ch.id === activeRow.id) ?? null
   }, [activeRow, annotatorChapters])
+
+  useEffect(() => { setPageStart(0) }, [chapterId])
 
   async function handleEditSeriesSubmit(form) {
     if (!series) return
@@ -224,6 +228,11 @@ export default function SeriesUploadDetail() {
     const progressPct = pages.length > 0 ? Math.min(100, pages.length * 4) : null
     const statusBadge = STATUS_BADGE[activeRow.status] ?? STATUS_BADGE.draft
 
+    const PAGE_LIMIT = 6
+    const visiblePages = pagesWithMedia.slice(pageStart, pageStart + PAGE_LIMIT)
+    const hasPrev = pageStart > 0
+    const hasNext = pageStart + PAGE_LIMIT < pagesWithMedia.length
+
     const openAnnotate = () => navigate('/mangaka', {
       state: { tab: 'annotate', series: series.title, chapterId: activeRow.id },
     })
@@ -251,9 +260,9 @@ export default function SeriesUploadDetail() {
                 <p className="text-sm text-amber-600">Ảnh chapter chưa tải được — mở Upload & Ghi chú để xem lại.</p>
               ) : null}
               <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
-                {pagesWithMedia.length ? pagesWithMedia.map((p, i) => (
+                {visiblePages.length ? visiblePages.map((p, i) => (
                   <div key={p.id ?? i} className="overflow-hidden rounded-lg border bg-muted/30">
-                    <img src={p.url} alt={p.name ?? `Trang ${i + 1}`} className="aspect-[728/1030] w-full object-cover" />
+                    <img src={p.url} alt={p.name ?? `Trang ${pageStart + i + 1}`} className="aspect-[728/1030] w-full object-cover" />
                   </div>
                 )) : (
                   <div className="col-span-full flex flex-col items-center gap-2 py-12 text-muted-foreground">
@@ -262,6 +271,23 @@ export default function SeriesUploadDetail() {
                   </div>
                 )}
               </div>
+              {pagesWithMedia.length > PAGE_LIMIT ? (
+                <div className="flex items-center justify-between gap-4">
+                  <p className="text-sm text-muted-foreground">
+                    {pageStart + 1}–{Math.min(pageStart + PAGE_LIMIT, pagesWithMedia.length)} / {pagesWithMedia.length} trang
+                  </p>
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={() => setPageStart(s => s - PAGE_LIMIT)} disabled={!hasPrev}>
+                      <ChevronLeft className="size-4" />
+                      Trước
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => setPageStart(s => s + PAGE_LIMIT)} disabled={!hasNext}>
+                      Sau
+                      <ChevronRight className="size-4" />
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
               <Button onClick={openAnnotate}>
                 <PenSquare className="size-4" />
                 Mở Upload & Ghi chú

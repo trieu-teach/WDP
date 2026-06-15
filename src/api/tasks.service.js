@@ -32,6 +32,20 @@ export const tasksService = {
     }).then(unwrap)
   },
 
+  /**
+   * Flow mới (1 task = 1 chapter): assistant nộp NHIỀU ảnh kết quả cho 1 task chapter.
+   * TODO backend: bổ sung endpoint `POST /tasks/{id}/submit-chapter` nhận `result_images[]` (multipart).
+   * Tạm thời dùng `submit` với ảnh đầu nếu BE chưa cập nhật.
+   */
+  submitChapter(taskId, resultFiles) {
+    const fd = new FormData()
+    const list = Array.isArray(resultFiles) ? resultFiles : [resultFiles]
+    list.forEach((file) => fd.append('result_images', file))
+    return http.post(`/tasks/${taskId}/submit`, fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then(unwrap)
+  },
+
   approve(taskId) {
     return http.patch(`/tasks/${taskId}/approve`).then(unwrap)
   },

@@ -4,6 +4,7 @@ import {
   ArrowUp,
   Eye,
   EyeOff,
+  Layers,
   Upload,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -17,11 +18,21 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 
+const BLEND_MODES = [
+  { value: 'source-over', label: 'Bình thường' },
+  { value: 'multiply', label: 'Multiply' },
+  { value: 'screen', label: 'Screen' },
+  { value: 'overlay', label: 'Overlay' },
+  { value: 'lighten', label: 'Lighten' },
+  { value: 'darken', label: 'Darken' },
+]
+
 export function ProductionLayerRow({
   layer,
   step,
   onToggle,
   onChangeOpacity,
+  onChangeBlend,
   onPickFile,
   onDownload,
   onMoveUp,
@@ -140,22 +151,47 @@ export function ProductionLayerRow({
       </div>
 
       {layer.visible && hasImage ? (
-        <div className="mt-2 flex items-center gap-2 pl-12">
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-            Đậm
-          </span>
-          <input
-            type="range"
-            min={10}
-            max={100}
-            step={5}
-            value={layer.opacity ?? 100}
-            onChange={(e) => onChangeOpacity(layer.id, Number(e.target.value))}
-            className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-muted [&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
-          />
-          <span className="w-8 text-right text-[10px] tabular-nums text-muted-foreground">
-            {layer.opacity ?? 100}%
-          </span>
+        <div className="mt-2 space-y-1.5 pl-12">
+          <div className="flex items-center gap-2">
+            <span className="w-12 text-[10px] uppercase tracking-wider text-muted-foreground">
+              Đậm
+            </span>
+            <input
+              type="range"
+              min={10}
+              max={100}
+              step={5}
+              value={layer.opacity ?? 100}
+              onChange={(e) => onChangeOpacity(layer.id, Number(e.target.value))}
+              className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-muted [&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
+            />
+            <span className="w-8 text-right text-[10px] tabular-nums text-muted-foreground">
+              {layer.opacity ?? 100}%
+            </span>
+          </div>
+          {onChangeBlend ? (
+            <div className="flex items-center gap-2">
+              <Layers className="size-3 text-muted-foreground" />
+              <span className="w-12 text-[10px] uppercase tracking-wider text-muted-foreground">
+                Trộn
+              </span>
+              <Select
+                value={layer.blendMode ?? 'source-over'}
+                onValueChange={(v) => onChangeBlend?.(layer.id, v)}
+              >
+                <SelectTrigger className="h-7 flex-1 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {BLEND_MODES.map((m) => (
+                    <SelectItem key={m.value} value={m.value}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </li>

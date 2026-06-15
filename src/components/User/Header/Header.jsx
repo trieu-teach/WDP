@@ -10,6 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { NotificationBell } from '@/components/layout/NotificationBell.jsx'
 import { cn } from '@/lib/utils'
 
 export default function Header({ links = [], onLogout, className }) {
@@ -49,6 +50,7 @@ export default function Header({ links = [], onLogout, className }) {
         </nav>
 
         <div className="flex items-center gap-2">
+          {user ? <NotificationBell /> : null}
           {user && onLogout ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

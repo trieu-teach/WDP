@@ -888,7 +888,8 @@ export default function ChapterAnnotator({
               Gửi cả chapter {activeChapter ? `Ch. ${activeChapter.num}` : ''} cho Assistant
             </p>
             <p className={cn('text-xs', compact ? 'text-zinc-300' : 'text-muted-foreground')}>
-              {pages.length} trang · {totalNotes} ô ghi chú · 1 chapter = 1 Assistant · trang không có ghi chú vẫn gửi được
+              {pages.length} trang · {totalNotes} ô ghi chú · 1 task = cả chapter
+              {totalNotes > 0 ? ' · các ghi chú sẽ gộp vào mô tả' : ''}
             </p>
           </div>
           {hiredAssistants.length > 0 ? (
